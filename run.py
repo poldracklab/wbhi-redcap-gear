@@ -16,21 +16,21 @@ DATE_FORMAT_RC = "%Y-%m-%d"
 REDCAP_API_URL = "https://redcap.stanford.edu/api/"
 WBHI_ID_LENGTH = 5 # An additional character corresponding to site will be prepended
 SITE_KEY = {
-        "UCSB": "A",
-        "UC Berkeley": "B",
-        "UCSF": "C",
-        "UC Irvine": "D",
-        "UC Davis": "E",
-        "Stanford": "F"
+        "ucsb": "A",
+        "ucb": "B",
+        "ucsf": "C",
+        "uci": "D",
+        "ucd": "E",
+        "stanford": "F"
     }
 REDCAP_KEY = {
     "site": {
-        "UCSB": "1",
-        "UC Berkeley": "2",
-        "UCSF": "3",
-        "UC Irvine": "4",
-        "UC Davis": "5",
-        "Stanford": "6"
+        "ucsb": "1",
+        "ucb": "2",
+        "ucsf": "3",
+        "uci": "4",
+        "ucd": "5",
+        "stanford": "6"
     },
     "before_noon": {
         True: "1",
@@ -136,8 +136,11 @@ def main():
     destination_id = gtk_context.config_json["destination"]["id"]
     data_id = client.get(destination_id)["parents"]["project"]
     fw_project = client.get_project(data_id)
-    site = fw_project.parents.group
+    site = fw_project.group
     sessions = get_sessions(fw_project)
+    if not sessions:
+        print("No sessions were checked")
+        sys.exit(0)
         
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
