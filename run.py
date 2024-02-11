@@ -3,6 +3,7 @@
 import sys
 import random
 import string
+import re
 import requests
 import flywheel_gear_toolkit
 import logging
@@ -10,12 +11,31 @@ from redcap import Project
 from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
-DATE_FORMAT = "%Y%m%d"
+DATE_FORMAT_FW = "%Y%m%d"
+DATE_FORMAT_RC = "%Y-%m-%d"
 REDCAP_API_URL = "https://redcap.stanford.edu/api/"
 WBHI_ID_LENGTH = 5 # An additional character corresponding to site will be prepended
 SITE_KEY = {
-    'ucsb': 'A',
-    'ucdavis': 'B'
+        "UCSB": "A",
+        "UC Berkeley": "B",
+        "UCSF": "C",
+        "UC Irvine": "D",
+        "UC Davis": "E",
+        "Stanford": "F"
+    }
+REDCAP_KEY = {
+    "site": {
+        "UCSB": "1",
+        "UC Berkeley": "2",
+        "UCSF": "3",
+        "UC Irvine": "4",
+        "UC Davis": "5",
+        "Stanford": "6"
+    },
+    "before_noon": {
+        True: "1",
+        False: "2"
+    }
 }
     
 def tag_parse(tag):
@@ -40,25 +60,36 @@ def get_sessions(fw_project):
         elif len(redcap_tags) > 1:
             redcap_tags = [sorted(redcap_tags)[-1]]
         tag_date_str = redcap_tags[0].split('_')[-1]
-        tag_date = datetime.strptime(tag_date_str, DATE_FORMAT)
+        tag_date = datetime.strptime(tag_date_str, DATE_FORMAT_FW)
         if tag_date <= today:
             sessions.append(s)
     return sessions
 
-def get_dicom_fields(session):
-    dcm_hdr = {
-        "site": "1",
-        "participant_id": "20",
-        "mri_date": "2024-02-08"
-    }
-    return dcm_hdr
+def get_dicom_fields(session, site):
+    acq_list = session.acquisitions()
+    acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
+    file_list = acq_sorted[0].files
+    dicom = [f for f in file_list if f.type == "dicom"][0]
+    dcm_hdr = dicom.reload().info["header"]["dicom"]
+    
+    hdr_fields = {}
+    hdr_fields["site"] = site
+    hdr_fields["date"] = datetime.strptime(dcm_hdr["AcquisitionDate"], DATE_FORMAT_FW)
+    hdr_fields["before_noon"] = float(dcm_hdr["AcquisitionTime"]) < 120000
+    hdr_fields["pi_id"], hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])
+    return hdr_fields
 
-def find_match(dcm_hdr, data):
+def find_match(hdr_fields, data):
     match = []
     for record in data:
-        if (record["site"] == dcm_hdr["site"]
-            and record["participant_id"] == dcm_hdr["participant_id"] 
-            and record["mri_date"] == dcm_hdr["mri_date"]):
+        if (record["icf_consent"] == "1"
+            and record["consent_complete"] == "2"
+            and record["site"] == REDCAP_KEY["site"][hdr_fields["site"]]
+            and datetime.strptime(record["mri_date"], DATE_FORMAT_RC) == hdr_fields["date"] 
+            and record["mri_ampm"] == REDCAP_KEY["before_noon"][hdr_fields["before_noon"]]
+            and record["mri_pi"].casefold() == hdr_fields["pi_id"].casefold()
+            and record["mri"].casefold() == hdr_fields["sub-id"].casefold()):
+            
             match.append(record)
     
     if not match:
@@ -69,9 +100,7 @@ def find_match(dcm_hdr, data):
     else: 
         return match[0]
 
-def generate_wbhi_id(dcm_hdr, id_list):
-    # site = dcm_hdr["site"]
-    site = "ucsb"
+def generate_wbhi_id(site, id_list):
     wbhi_id_prefix = SITE_KEY[site]
     
     while True:
@@ -96,9 +125,9 @@ def tag_session(session, wbhi):
         else:
             n = 0
         new_tag_date = datetime.today() + timedelta(days=2**n)
-        new_tag_date_str = new_tag_date.strftime(DATE_FORMAT)
+        new_tag_date_str = new_tag_date.strftime(DATE_FORMAT_FW)
         new_redcap_tag = "redcap_" + str(n + 1) + "_" + new_tag_date_str
-        session.add_tag(new_redcap_tag)
+        session.add_tag(new_redcap_tag)    
 
 def main():
     gtk_context.init_logging()
@@ -107,22 +136,22 @@ def main():
     destination_id = gtk_context.config_json["destination"]["id"]
     data_id = client.get(destination_id)["parents"]["project"]
     fw_project = client.get_project(data_id)
+    site = fw_project.parents.group
     sessions = get_sessions(fw_project)
-    
+        
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     data = redcap_project.export_records()
     
     id_list = [record["rid"] for record in data]
     new_records = []
-    wbhi_sessions = []
-    
+    wbhi_sessions = [] 
     for session in sessions:
-        dcm_hdr = get_dicom_fields(session)
-        match = find_match(dcm_hdr, data)
+        hdr_fields = get_dicom_fields(session, site)
+        match = find_match(hdr_fields, data)
         
         if match:
-            wbhi_id = generate_wbhi_id(dcm_hdr, id_list)
+            wbhi_id = generate_wbhi_id(site, id_list)
             match["rid"] = wbhi_id
             session.subject.update({'label': wbhi_id})
             new_records.append(match)
@@ -130,14 +159,17 @@ def main():
         else:
             tag_session(session, False)
     
-    response = redcap_project.import_records(new_records)
-    print("Updated records on REDCap to include newly generated wbhi-ids")
-    
-    for session in wbhi_sessions:
-        tag_session(session, True)
-    
-    breakpoint()
-
+    if new_records:
+        response = redcap_project.import_records(new_records)
+        if response["count"] > 0:
+            print("Updated records on REDCap to include newly generated wbhi-id(s)")
+        else:
+            print("Failed to update records on REDCap")
+        for session in wbhi_sessions:
+            tag_session(session, True)
+    else:
+        print("No matches found on REDCap")
+        
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
         config = gtk_context.config
