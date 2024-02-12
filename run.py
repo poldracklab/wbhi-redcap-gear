@@ -70,6 +70,9 @@ def get_dicom_fields(session, site):
     acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
     file_list = acq_sorted[0].files
     dicom = [f for f in file_list if f.type == "dicom"][0]
+    dicom = dicom.reload()
+    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
+        return None
     dcm_hdr = dicom.reload().info["header"]["dicom"]
     
     hdr_fields = {}
@@ -148,9 +151,12 @@ def main():
     
     id_list = [record["rid"] for record in data]
     new_records = []
-    wbhi_sessions = [] 
+    wbhi_sessions = []
+    wbhi_ids = []
     for session in sessions:
         hdr_fields = get_dicom_fields(session, site)
+        if not hdr_fields:
+            continue
         match = find_match(hdr_fields, data)
         
         if match:
@@ -159,13 +165,16 @@ def main():
             session.subject.update({'label': wbhi_id})
             new_records.append(match)
             wbhi_sessions.append(session)
+            wbhi_ids.append(wbhi_id)
         else:
             tag_session(session, False)
     
     if new_records:
         response = redcap_project.import_records(new_records)
         if response["count"] > 0:
-            print("Updated records on REDCap to include newly generated wbhi-id(s)")
+            print("Updated records on REDCap to include newly generated wbhi-id(s):")
+            for wbhi_id in wbhi_ids:
+                print(wbhi_id)
         else:
             print("Failed to update records on REDCap")
         for session in wbhi_sessions:
