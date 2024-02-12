@@ -119,6 +119,9 @@ def tag_session(session, wbhi):
         if redcap_tags:
             for tag in redcap_tags:
                 session.delete_tag(tag)
+        for acq in session.acquisitions():
+            for f in acq.files:
+                f.add_tag("wbhi")
     else:
         if redcap_tags:
             redcap_tag = sorted(redcap_tags)[-1]
@@ -168,7 +171,7 @@ def main():
             wbhi_ids.append(wbhi_id)
         else:
             tag_session(session, False)
-    
+            
     if new_records:
         response = redcap_project.import_records(new_records)
         if response["count"] > 0:
