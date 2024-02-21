@@ -82,8 +82,8 @@ def get_dicom_fields(session, site):
     hdr_fields["pi_id"], hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[:2]
     return hdr_fields
 
-def find_match(hdr_fields, data):
-    match = []
+def find_matches(hdr_fields, data):
+    matches = []
     for record in data:
         if (record["icf_consent"] == "1"
             and record["consent_complete"] == "2"
@@ -93,15 +93,12 @@ def find_match(hdr_fields, data):
             and record["mri_pi"].casefold() == hdr_fields["pi_id"].casefold()
             and record["mri"].casefold() == hdr_fields["sub-id"].casefold()):
             
-            match.append(record)
+            matches.append(record)
     
-    if not match:
+    if not matches:
         return None
-    elif len(match) > 1:
-        print(f"More than one REDCap match found for dicom: {hdr_fields}")
-        sys.exit(1)
     else: 
-        return match[0]
+        return matches
 
 def generate_wbhi_id(site, id_list):
     wbhi_id_prefix = SITE_KEY[site]
@@ -160,15 +157,16 @@ def main():
         hdr_fields = get_dicom_fields(session, site)
         if not hdr_fields:
             continue
-        match = find_match(hdr_fields, data)
+        matches = find_matches(hdr_fields, data)
         
-        if match:
+        if matches:
             wbhi_id = generate_wbhi_id(site, id_list)
-            match["rid"] = wbhi_id
             session.subject.update({'label': wbhi_id})
-            new_records.append(match)
             wbhi_sessions.append(session)
             wbhi_ids.append(wbhi_id)
+            for match in matches:
+                match["rid"] = wbhi_id
+                new_records.append(match)
         else:
             tag_session(session, False)
             
