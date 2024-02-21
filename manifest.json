@@ -11,24 +11,11 @@
 	"source": "",
 	"environment": {
 		"FLYWHEEL": "/flywheel/v0",
-		"MAMBA_USER_ID": "57439",
-		"ENV_NAME": "base",
-		"MAMBA_USER": "mambauser",
-		"HOSTNAME": "677a334a253c",
 		"PWD": "/flywheel/v0",
-		"CONDA_PREFIX": "/opt/conda",
-		"MAMBA_ROOT_PREFIX": "/opt/conda",
 		"HOME": "/root",
 		"LANG": "C.UTF-8",
-		"CONDA_PROMPT_MODIFIER": "(base) ",
-		"MAMBA_EXE": "/bin/micromamba",
-		"MAMBA_USER_GID": "57439",
-		"TERM": "xterm",
-		"CONDA_SHLVL": "1",
-		"SHLVL": "1",
-		"CONDA_DEFAULT_ENV": "base",
 		"LC_ALL": "C.UTF-8",
-		"PATH": "/opt/conda/bin:/opt/conda/condabin:/opt/conda/envs/wbhi-redcap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	},
 	"custom": {
 		"gear-builder": {
