@@ -51,7 +51,7 @@ def get_sessions(fw_project):
         if "wbhi" in s.tags:
             continue
         timestamp = s.timestamp.replace(tzinfo=None)
-        if now - timestamp < timedelta(days=1):
+        if now - timestamp < timedelta(days=config["ignore_until_n_days_old"]):
             continue
         redcap_tags = [t for t in s.tags if t.startswith('redcap')]
         if not redcap_tags:

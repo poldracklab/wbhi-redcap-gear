@@ -35,6 +35,11 @@
 		"redcap_api_key": {
 			"description": "REDCap API key",
 			"type": "string"
+		},
+		"ignore_until_n_days_old": {
+			"description": "Ignore sessions that are less than n days old. Default = 1 day.",
+			"type": "integer",
+			"default": 1
 		}
 	},
 	"command": "python run.py"
