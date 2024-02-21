@@ -79,7 +79,7 @@ def get_dicom_fields(session, site):
     hdr_fields["site"] = site
     hdr_fields["date"] = datetime.strptime(dcm_hdr["AcquisitionDate"], DATE_FORMAT_FW)
     hdr_fields["before_noon"] = float(dcm_hdr["AcquisitionTime"]) < 120000
-    hdr_fields["pi_id"], hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])
+    hdr_fields["pi_id"], hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[:2]
     return hdr_fields
 
 def find_match(hdr_fields, data):
@@ -98,7 +98,7 @@ def find_match(hdr_fields, data):
     if not match:
         return None
     elif len(match) > 1:
-        print(f"More than one REDCap match found for dicom: {dcm_hdr}")
+        print(f"More than one REDCap match found for dicom: {hdr_fields}")
         sys.exit(1)
     else: 
         return match[0]
