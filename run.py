@@ -5,11 +5,13 @@ import random
 import string
 import re
 import os
+import sys
 import flywheel_gear_toolkit
 import flywheel
 import logging
 from redcap import Project
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 log = logging.getLogger(__name__)
 DATE_FORMAT_FW = "%Y%m%d"
@@ -31,6 +33,7 @@ REDCAP_KEY = {
     }
 }
 SITE_LIST = ["ucsb", "uci"]
+WAIT_TIMEOUT = 3600 * 2
 
 
 def get_sessions_pi_copy(fw_project):
@@ -84,24 +87,22 @@ def get_dicom_fields(session, site):
     hdr_fields["date"] = datetime.strptime(dcm_hdr["AcquisitionDate"], DATE_FORMAT_FW)
     hdr_fields["before_noon"] = float(dcm_hdr["AcquisitionTime"]) < 120000
     if site == 'ucsb':
-        hdr_fields["pi_id"], hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[:2]
+        hdr_fields["pi_id"], hdr_fields["sub_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[:2]
     elif site == 'uci':
         hdr_fields["pi_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[0]
-        hdr_fields["sub-id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientID"])[0]
+        hdr_fields["sub_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientID"])[0]
     
     return hdr_fields
 
 def find_matches(hdr_fields, redcap_data):
     matches = []
-    if hdr_fields["pi_id"].casefold() == 'jacobs':
-        breakpoint()
     for record in reversed(redcap_data):
         if (record["icf_consent"] == "1"
             and record["consent_complete"] == "2"
             and record["site"] == hdr_fields["site"]
             and datetime.strptime(record["mri_date"], DATE_FORMAT_RC) == hdr_fields["date"] 
             and record["mri_ampm"] == REDCAP_KEY["before_noon"][hdr_fields["before_noon"]]
-            and record["mri"].casefold() == hdr_fields["sub-id"].casefold()):
+            and record["mri"].casefold() == hdr_fields["sub_id"].casefold()):
             
             #mri_pi_field = "mri_pi_" + hdr_fields["site"]
             mri_pi_field = "mri_pi"
@@ -182,7 +183,6 @@ def run_gear(gear, inputs, config, dest, tags=None):
         str: The id of the submitted job.
         
     """
-    breakpoint()
     try:
         # Run the gear on the inputs provided, stored output in dest constainer and returns job ID
         gear_job_id = gear.run(inputs=inputs, config=config, destination=dest, tags=tags)
@@ -190,93 +190,154 @@ def run_gear(gear, inputs, config, dest, tags=None):
         return gear_job_id
     except flywheel.rest.ApiException:
         log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
-        
+
+def delete_project(project_path):
+    try: 
+        project = client.lookup(project_path)
+        client.delete_project(project.id)
+        print(f"Successfully deleted project {project_path}")
+    except flywheel.rest.ApiException:
+        print(f"Project {project_path} does not exist")
+
 def smart_copy(
     src_project,
     group_id: str = None,
-    session_list: list = None,
+    tag: str = None,
     dst_project_label: str = None,
-    ) -> dict:
+    delete_existing_project = False) -> dict:
     """Smart copy a project to a group and returns API response.
 
     Args:
         src_project: the source project (mandatory)
-        group_label (str): the destination Flywheel group (default: same group as
+        group_id (str): the destination Flywheel group (default: same group as
                            source project)
         session_list (list): list of sessions to be copied
         dst_project_label (str): the destination project label
 
     Returns:
         dict: copy job response
-    """
+    """    
     
+    if delete_existing_project:
+        dst_project_path = os.path.join(group_id, dst_project_label)
+        delete_project(dst_project_path)
+            
     data = {
         "group_id": group_id,
         "project_label": dst_project_label,
         "filter": {
             "exclude_analysis": False,
             "exclude_notes": False,
-            "exclude_tags": False,
+            "exclude_tags": True,
             "include_rules": [],
             "exclude_rules": [],
         },
     }
 
-    # If a subject_label_list was provided, check that they exists and add to the filter
-    if session_list:
-        for session in session_list:
-            session_label = session.label
-            if not src_project.sessions.find_first(f"label={session_label}"):
-                raise ValueError(
-                    f"Subject {session_label} not found in project {src_project.label}"
-                )
-            data["filter"]["include_rules"].append(f"session.label={session_label}")
-
+    data["filter"]["include_rules"].append(f"session.tags={tag}")
     print(f'Smart copying "{src_project.label}" to "{group_id}/{dst_project_label}')
+    
     return client.project_copy(src_project.id, data)
 
 
-def check_smartcopy_job_complete(destination_project_id: str) -> bool:
+def check_smartcopy_job_complete(dst_project) -> bool:
     """Check if a smart copy job is complete.
 
     Args:
-        destination_project_id (str): the destination project id
+        dst_project (str): the destination project id
 
     Returns:
         bool: True if the job is complete, False otherwise
     """
-    copy_status = client.get(destination_project_id).copy_status
+    copy_status = dst_project.reload().copy_status
     if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
         return True
     elif copy_status == flywheel.ProjectCopyStatus.FAILED:
-        raise RuntimeError(f"Smart copy job to project {destination_project_id} failed")
+        raise RuntimeError(f"Smart copy job to project {dst_project} failed")
     else:
         return False
+
+def check_smartcopy_loop(dst_project: str):
+    start_time = time.time()
+    while True:
+        time.sleep(5)
+        if check_smartcopy_job_complete(dst_project):
+            log.info(f"Copy project to {dst_project.id} complete")
+            return
+        if time.time() - start_time > WAIT_TIMEOUT:
+            log.error("Wait timeout for copy to complete")
+            sys.exit(-1)
+            
+def mv_to_project(src_project, dst_project):
+    print("Moving sessions from {src_project.group.id}/{src_project.project.label} to {dst_project.group.id}/{dst_project.project.label}")
+    for session in src_project.sessions.iter():
+        try:
+            session.update(project=dst_project.id)
+        except flywheel.ApiException as exc:
+            if exc.status == 422:
+                log.error(
+                    f"Session {session.subject.label}/{session.label} already exists in {dst_project.label} - Skipping"
+                )
+            else:
+                log.exception(
+                    f"Error moving subject {session.subject.label}/{session.label} from {src_project.label} to {dst_project.label}"
+                )
         
+def check_copied_sessions_exist(session_list, pi_project):
+    start_time = time.time()
+    while session_list:
+        time.sleep(5)
+        for session in session_list:
+            if pi_project.sessions.find_first(f'copy_of={session.id}'):
+                session_list.remove(session)
+        if time.time() - start_time > WAIT_TIMEOUT:
+            log.error("Wait timeout for move to complete")
+            sys.exit(-1)
+        
+        
+
 def pi_copy(site):
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
     sessions = get_sessions_pi_copy(site_project)
+    copy_dict = defaultdict(list)
     
     for session in sessions:
         hdr_fields = get_dicom_fields(session, site)
         if hdr_fields:
             pi_id = hdr_fields["pi_id"].casefold()
             pi_project_path = os.path.join(site, pi_id)
-            try: 
-                pi_project = client.lookup(pi_project_path)
-            except flywheel.rest.ApiException:
+            if not pi_id.isalnum():
+                print(pi_id)
                 pi_id = 'other'
         else:
             pi_id = 'other'
-        
-        smart_copy(site_project, site, [session], pi_id)
+        copy_dict[pi_id].append(session)
     
-    breakpoint()
-    check_smartcopy_job_complete(site_project.id)
+    for pi_id, session_list in copy_dict.items():
+        pi_project_path = os.path.join(site, pi_id)
+        pi_project = client.lookup(pi_project_path)
+        tmp_project_label = site + '_' + pi_id
+        to_copy_tag = 'to_copy_' + pi_id
+        wbhi_tag = 'wbhi_' + pi_id
+        
+        [s.add_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
+        try:
+            client.lookup(pi_project_path)
+            tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
+            tmp_project = client.get_project(tmp_project_id)
+            check_smartcopy_loop(tmp_project)
+            mv_to_project(tmp_project, pi_project)
+            check_copied_sessions_exist(session_list, pi_project)
+            delete_project(os.path.join('tmp', tmp_project_label))
+        except flywheel.rest.ApiException:
+            new_project_id = smart_copy(site_project, site, to_copy_tag, pi_id, True)['project_id']
+            check_smartcopy_loop(new_project)
             
+        [s.remove_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
+        [s.add_tag(wbhi_tag) for s in session_list if to_copy_tag not in s.tags]
+    breakpoint()        
                 
-
 def redcap_match(site, redcap_data, redcap_project, id_list):
     print(f"Checking {site} for matches")
     
@@ -301,6 +362,7 @@ def redcap_match(site, redcap_data, redcap_project, id_list):
     
         if matches:
             wbhi_id, id_list = generate_wbhi_id(matches, site, id_list)
+            matches["rid"] = wbhi_id
             wbhi_id_session_dict['wbhi_id'] = session
             wbhi_ids.append(wbhi_id)
             for match in matches:
@@ -320,30 +382,7 @@ def redcap_match(site, redcap_data, redcap_project, id_list):
         for session in wbhi_id_session_dict.values():
             tag_session(session, True)
     else:
-        print("No matches found on REDCap")
-    
-    if wbhi_id_session_dict.values():
-        smart_copy(site_project, 'WBHI', wbhi_id_session_dict.values(), 'deid')
-
-        smartcopy_complete = False
-        for i in range(60):
-            if check_smartcopy_job_complete(pre_deid_project.id):
-                smartcopy_complete = True
-                print("Successfully smart-copied sessions to wbhi/pre-deid")
-                break
-            else:
-                time.sleep(5)
-                
-        if not smartcopy_complete:
-            print("Smart copy timed out")
-        else:
-            for wbhi_id, session in wbhi_id_session_dict:
-                new_session = pre_deid_project.sessions.find_first(f"copy_of={session.id}")
-                new_session.subject.update({'label': wbhi_id})
-                print(f"Renamed subject {new_session.subject.id} to wbhi_id")
-                rename_session(new_session)
-                print(f"Renamed session {new_session.label} to ")
-                
+        print("No matches found on REDCap")        
                     
     return id_list
 
