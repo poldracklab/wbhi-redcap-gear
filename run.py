@@ -6,15 +6,21 @@ import string
 import re
 import os
 import sys
+import pip
 import flywheel_gear_toolkit
 import flywheel
 import logging
+import pandas as pd
 from redcap import Project
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+pip.main(["install", "--upgrade", "wbhiutils"])
+from wbhiutils import parse_dicom_hdr
+
 log = logging.getLogger(__name__)
 DATE_FORMAT_FW = "%Y%m%d"
+DATETIME_FORMAT_FW = "%Y%m%d %H%M%S.%f"
 DATE_FORMAT_RC = "%Y-%m-%d"
 REDCAP_API_URL = "https://redcap.stanford.edu/api/"
 WBHI_ID_LENGTH = 5 # An additional character corresponding to site will be prepended
@@ -33,8 +39,7 @@ REDCAP_KEY = {
     }
 }
 SITE_LIST = ["ucsb", "uci"]
-WAIT_TIMEOUT = 3600 * 2
-
+WAIT_TIMEOUT = 3600 * 2    
 
 def get_sessions_pi_copy(fw_project):
     sessions = []
@@ -69,29 +74,64 @@ def get_sessions_redcap(fw_project):
         if tag_date <= today:
             sessions.append(s)
     return sessions
+    
+def get_acq_hdr_fields(acq, site):
+    dicom_list = [f for f in acq.files if f.type == "dicom"]
+    if dicom_list:
+        dicom = dicom_list[0].reload()
+    else:
+        log.warning(f"{acq.label} contains no files.")
+        return None
+    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
+        log.error(f"File-classifier gear has not been run on {acq.label}")
+        return 'file_classifier_not_run'
 
-def get_dicom_fields(session, site):
+    dcm_hdr = dicom.info["header"]["dicom"]
+    acq_hdr_fields = {}
+    acq_hdr_fields["acq"] = acq
+    acq_hdr_fields["pi_id"] = parse_dicom_hdr.parse_pi_sub(dcm_hdr, site)[0].casefold()
+    series_datetime_str = dcm_hdr["SeriesDate"] + ' ' + dcm_hdr["SeriesTime"]
+    acq_hdr_fields["series_datetime"] = datetime.strptime(series_datetime_str, DATETIME_FORMAT_FW)
+
+    return acq_hdr_fields
+
+def split_session(session, hdr_df):
+    # To-do: actually implement splitting
+    if hdr_df["pi_id"].nunique() > 1:
+        logging.error(f"Need to split session {session.label}")
+        sys.exit(1)
+    hdr_df_sorted = hdr_df.sort_values(by="series_datetime")
+    time_diff = hdr_df_sorted["series_datetime"].diff()
+    threshold = pd.Timedelta(hours=4)
+    max_diff = time_diff.max()
+    if max_diff > threshold:
+        logging.error(f"Need to split session {session.label}")
+        sys.exit(1)
+        
+def get_session_hdr_fields(session, site):
     acq_list = session.acquisitions()
     acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
     if not acq_sorted:
         return None
-    file_list = acq_sorted[0].files
-    dicom = [f for f in file_list if f.type == "dicom"][0]
-    dicom = dicom.reload()
+    acq_0 = acq_sorted[0]
+    file_list = acq_0.files
+    dicom_list = [f for f in file_list if f.type == "dicom"]
+    if dicom_list:
+        dicom = dicom_list[0].reload()
+    else:
+        log.warning(f"{acq_0.label} contains no files.")
+        return None
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
+        log.warning(f"File-classifier gear has not been run on {acq_0.label}")
         return None
     dcm_hdr = dicom.reload().info["header"]["dicom"]
-    
+
     hdr_fields = {}
     hdr_fields["site"] = site
-    hdr_fields["date"] = datetime.strptime(dcm_hdr["AcquisitionDate"], DATE_FORMAT_FW)
-    hdr_fields["before_noon"] = float(dcm_hdr["AcquisitionTime"]) < 120000
-    if site == 'ucsb':
-        hdr_fields["pi_id"], hdr_fields["sub_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[:2]
-    elif site == 'uci':
-        hdr_fields["pi_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientName"])[0]
-        hdr_fields["sub_id"] = re.split('[^0-9a-zA-Z]', dcm_hdr["PatientID"])[0]
-    
+    hdr_fields["date"] = datetime.strptime(dcm_hdr["SeriesDate"], DATE_FORMAT_FW)
+    hdr_fields["before_noon"] = float(dcm_hdr["SeriesTime"]) < 120000
+    hdr_fields["pi_id"], hdr_fields["sub-id"] = parse_dicom_hdr.parse_pi_sub(dcm_hdr, site)
+
     return hdr_fields
 
 def find_matches(hdr_fields, redcap_data):
@@ -294,8 +334,6 @@ def check_copied_sessions_exist(session_list, pi_project):
             log.error("Wait timeout for move to complete")
             sys.exit(-1)
         
-        
-
 def pi_copy(site):
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
@@ -303,24 +341,39 @@ def pi_copy(site):
     copy_dict = defaultdict(list)
     
     for session in sessions:
-        hdr_fields = get_dicom_fields(session, site)
-        if hdr_fields:
-            pi_id = hdr_fields["pi_id"].casefold()
-            pi_project_path = os.path.join(site, pi_id)
-            if not pi_id.isalnum():
-                print(pi_id)
-                pi_id = 'other'
-        else:
-            pi_id = 'other'
-        copy_dict[pi_id].append(session)
-    
-    for pi_id, session_list in copy_dict.items():
+        skip_session = False
+        hdr_list = []
+        for acq in session.acquisitions():
+            acq_hdr_fields = get_acq_hdr_fields(acq, site)
+            if not acq_hdr_fields:
+                continue
+            elif acq_hdr_fields == 'file_classifier_not_run':
+                skip_session = True
+                continue
+            hdr_list.append(acq_hdr_fields)
+            if not acq_hdr_fields["pi_id"].isalnum():
+                pi_project = 'other'
+            else:
+                pi_project = acq_hdr_fields["pi_id"]
+            acq_hdr_fields["pi_project"] = pi_project
+            copy_tag = 'copy_' + pi_project
+            if copy_tag not in acq.tags:
+                copy_dict[pi_project].append(acq)
+ 
+        if skip_session == True:
+            continue
+        if hdr_list:
+            hdr_df = pd.DataFrame(hdr_list)
+            split_session(session, hdr_df )
+
+    sys.exit()
+    for pi_id, acq_list in copy_dict.items():
         pi_project_path = os.path.join(site, pi_id)
         pi_project = client.lookup(pi_project_path)
         tmp_project_label = site + '_' + pi_id
         to_copy_tag = 'to_copy_' + pi_id
         wbhi_tag = 'wbhi_' + pi_id
-        
+
         [s.add_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
         try:
             client.lookup(pi_project_path)
@@ -333,10 +386,10 @@ def pi_copy(site):
         except flywheel.rest.ApiException:
             new_project_id = smart_copy(site_project, site, to_copy_tag, pi_id, True)['project_id']
             check_smartcopy_loop(new_project)
-            
+
         [s.remove_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
         [s.add_tag(wbhi_tag) for s in session_list if to_copy_tag not in s.tags]
-    breakpoint()        
+    breakpoint()      
                 
 def redcap_match(site, redcap_data, redcap_project, id_list):
     print(f"Checking {site} for matches")
