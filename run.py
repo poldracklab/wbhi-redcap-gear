@@ -38,7 +38,7 @@ REDCAP_KEY = {
         False: "2"
     }
 }
-SITE_LIST = ["ucsb", "uci"]
+SITE_LIST = ["joe_test", "ucsb", "uci"]
 WAIT_TIMEOUT = 3600 * 2    
 
 def get_sessions_pi_copy(fw_project):
@@ -107,7 +107,91 @@ def split_session(session, hdr_df):
     if max_diff > threshold:
         logging.error(f"Need to split session {session.label}")
         sys.exit(1)
-        
+
+def smart_copy(
+    src_project,
+    group_id: str = None,
+    tag: str = None,
+    dst_project_label: str = None,
+    delete_existing_project = False) -> dict:
+    """Smart copy a project to a group and returns API response.
+
+    Args:
+        src_project: the source project (mandatory)
+        group_id (str): the destination Flywheel group (default: same group as
+                           source project)
+        session_list (list): list of sessions to be copied
+        dst_project_label (str): the destination project label
+
+    Returns:
+        dict: copy job response
+    """    
+    
+    if delete_existing_project:
+        dst_project_path = os.path.join(group_id, dst_project_label)
+        delete_project(dst_project_path)
+            
+    data = {
+        "group_id": group_id,
+        "project_label": dst_project_label,
+        "filter": {
+            "exclude_analysis": False,
+            "exclude_notes": False,
+            "exclude_tags": True,
+            "include_rules": [],
+            "exclude_rules": [],
+        },
+    }
+
+    data["filter"]["include_rules"].append(f"acquisition.tags={tag}")
+    print(f'Smart-copying acquisition labeled "{tag}" from "{src_project.label}" to "{group_id}/{dst_project_label}')
+    
+    return client.project_copy(src_project.id, data)
+
+
+def check_smartcopy_job_complete(dst_project) -> bool:
+    """Check if a smart copy job is complete.
+
+    Args:
+        dst_project (str): the destination project id
+
+    Returns:
+        bool: True if the job is complete, False otherwise
+    """
+    copy_status = dst_project.reload().copy_status
+    if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
+        return True
+    elif copy_status == flywheel.ProjectCopyStatus.FAILED:
+        raise RuntimeError(f"Smart copy job to project {dst_project} failed")
+    else:
+        return False
+
+def check_smartcopy_loop(dst_project: str):
+    start_time = time.time()
+    while True:
+        time.sleep(5)
+        if check_smartcopy_job_complete(dst_project):
+            log.info(f"Copy project to {dst_project.id} complete")
+            return
+        if time.time() - start_time > WAIT_TIMEOUT:
+            log.error("Wait timeout for copy to complete")
+            sys.exit(-1)
+
+def check_copied_acq_exist(acq_list, pi_project):  
+    for acq in acq_list:
+        sub_label = client.get_subject(acq.parents.subject).label
+        ses_label = client.get_session(acq.session).label
+        subject = pi_project.subjects.find_first(f'label={sub_label}')
+        session = subject.sessions.find_first(f'label={ses_label}')
+        if session and session.acquisitions.find_first(f'copy_of={acq.id}'):
+            acq_list.remove(acq)
+        else:
+            sys.exit()
+    if acq_list:
+        acq_labels = [acq.label for acq in acq_list]
+        log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
+    breakpoint()
+
 def get_session_hdr_fields(session, site):
     acq_list = session.acquisitions()
     acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
@@ -238,75 +322,6 @@ def delete_project(project_path):
         print(f"Successfully deleted project {project_path}")
     except flywheel.rest.ApiException:
         print(f"Project {project_path} does not exist")
-
-def smart_copy(
-    src_project,
-    group_id: str = None,
-    tag: str = None,
-    dst_project_label: str = None,
-    delete_existing_project = False) -> dict:
-    """Smart copy a project to a group and returns API response.
-
-    Args:
-        src_project: the source project (mandatory)
-        group_id (str): the destination Flywheel group (default: same group as
-                           source project)
-        session_list (list): list of sessions to be copied
-        dst_project_label (str): the destination project label
-
-    Returns:
-        dict: copy job response
-    """    
-    
-    if delete_existing_project:
-        dst_project_path = os.path.join(group_id, dst_project_label)
-        delete_project(dst_project_path)
-            
-    data = {
-        "group_id": group_id,
-        "project_label": dst_project_label,
-        "filter": {
-            "exclude_analysis": False,
-            "exclude_notes": False,
-            "exclude_tags": True,
-            "include_rules": [],
-            "exclude_rules": [],
-        },
-    }
-
-    data["filter"]["include_rules"].append(f"session.tags={tag}")
-    print(f'Smart copying "{src_project.label}" to "{group_id}/{dst_project_label}')
-    
-    return client.project_copy(src_project.id, data)
-
-
-def check_smartcopy_job_complete(dst_project) -> bool:
-    """Check if a smart copy job is complete.
-
-    Args:
-        dst_project (str): the destination project id
-
-    Returns:
-        bool: True if the job is complete, False otherwise
-    """
-    copy_status = dst_project.reload().copy_status
-    if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
-        return True
-    elif copy_status == flywheel.ProjectCopyStatus.FAILED:
-        raise RuntimeError(f"Smart copy job to project {dst_project} failed")
-    else:
-        return False
-
-def check_smartcopy_loop(dst_project: str):
-    start_time = time.time()
-    while True:
-        time.sleep(5)
-        if check_smartcopy_job_complete(dst_project):
-            log.info(f"Copy project to {dst_project.id} complete")
-            return
-        if time.time() - start_time > WAIT_TIMEOUT:
-            log.error("Wait timeout for copy to complete")
-            sys.exit(-1)
             
 def mv_to_project(src_project, dst_project):
     print("Moving sessions from {src_project.group.id}/{src_project.project.label} to {dst_project.group.id}/{dst_project.project.label}")
@@ -322,17 +337,6 @@ def mv_to_project(src_project, dst_project):
                 log.exception(
                     f"Error moving subject {session.subject.label}/{session.label} from {src_project.label} to {dst_project.label}"
                 )
-        
-def check_copied_sessions_exist(session_list, pi_project):
-    start_time = time.time()
-    while session_list:
-        time.sleep(5)
-        for session in session_list:
-            if pi_project.sessions.find_first(f'copy_of={session.id}'):
-                session_list.remove(session)
-        if time.time() - start_time > WAIT_TIMEOUT:
-            log.error("Wait timeout for move to complete")
-            sys.exit(-1)
         
 def pi_copy(site):
     site_project_path = site + '/Inbound Data'
@@ -351,14 +355,13 @@ def pi_copy(site):
                 skip_session = True
                 continue
             hdr_list.append(acq_hdr_fields)
-            if not acq_hdr_fields["pi_id"].isalnum():
-                pi_project = 'other'
+            if acq_hdr_fields["pi_id"].isalnum():
+                pi_id = acq_hdr_fields["pi_id"]
             else:
-                pi_project = acq_hdr_fields["pi_id"]
-            acq_hdr_fields["pi_project"] = pi_project
-            copy_tag = 'copy_' + pi_project
+                pi_id = "other"
+            copy_tag = 'copied_' + pi_id
             if copy_tag not in acq.tags:
-                copy_dict[pi_project].append(acq)
+                copy_dict[pi_id].append(acq)
  
         if skip_session == True:
             continue
@@ -366,29 +369,29 @@ def pi_copy(site):
             hdr_df = pd.DataFrame(hdr_list)
             split_session(session, hdr_df )
 
-    sys.exit()
     for pi_id, acq_list in copy_dict.items():
         pi_project_path = os.path.join(site, pi_id)
-        pi_project = client.lookup(pi_project_path)
         tmp_project_label = site + '_' + pi_id
         to_copy_tag = 'to_copy_' + pi_id
-        wbhi_tag = 'wbhi_' + pi_id
 
-        [s.add_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
+        [acq.add_tag(to_copy_tag) for acq in acq_list if to_copy_tag not in acq.tags]
         try:
-            client.lookup(pi_project_path)
+            pi_project = client.lookup(pi_project_path)
             tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
             tmp_project = client.get_project(tmp_project_id)
             check_smartcopy_loop(tmp_project)
             mv_to_project(tmp_project, pi_project)
-            check_copied_sessions_exist(session_list, pi_project)
+            check_copied_acq_exist(acq_list, pi_project)
             delete_project(os.path.join('tmp', tmp_project_label))
         except flywheel.rest.ApiException:
             new_project_id = smart_copy(site_project, site, to_copy_tag, pi_id, True)['project_id']
+            new_project = client.get_project(new_project_id)
             check_smartcopy_loop(new_project)
-
-        [s.remove_tag(to_copy_tag) for s in session_list if to_copy_tag not in s.tags]
-        [s.add_tag(wbhi_tag) for s in session_list if to_copy_tag not in s.tags]
+            check_copied_acq_exist(acq_list, new_project)
+        
+        [acq.delete_tag(to_copy_tag) for acq in acq_list if to_copy_tag in acq.tags]
+        copied_tag = 'copied_' + pi_project
+        [acq.add_tag(copied_tag) for acq in acq_list if copied_tag not in acq.tags]
     breakpoint()      
                 
 def redcap_match(site, redcap_data, redcap_project, id_list):
