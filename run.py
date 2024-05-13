@@ -38,7 +38,8 @@ REDCAP_KEY = {
         False: "2"
     }
 }
-SITE_LIST = ["joe_test", "ucsb", "uci"]
+SITE_LIST = ["ucsb", "uci"]
+#SITE_LIST = ["joe_test"]
 WAIT_TIMEOUT = 3600 * 2    
 
 def get_sessions_pi_copy(fw_project):
@@ -83,7 +84,8 @@ def get_acq_hdr_fields(acq, site):
         log.warning(f"{acq.label} contains no files.")
         return None
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(f"File-classifier gear has not been run on {acq.label}")
+        sub_label = client.get_subject(acq.parents.subject).label
+        log.error(f"File-classifier gear has not been run on {sub_label}/{acq.label}")
         return 'file_classifier_not_run'
 
     dcm_hdr = dicom.info["header"]["dicom"]
@@ -183,12 +185,16 @@ def check_copied_acq_exist(acq_list, pi_project):
         sub_label = client.get_subject(acq.parents.subject).label
         ses_label = client.get_session(acq.session).label
         subject = pi_project.subjects.find_first(f'label={sub_label}')
+        if not subject:
+            acq_list_failed.append(acq)
+            continue
         session = subject.sessions.find_first(f'label={ses_label}')
         if not session or not session.acquisitions.find_first(f'copy_of={acq.id}'):
             acq_list_failed.append(acq)
     if acq_list_failed:
-        acq_labels = [acq.label for acq in acq_list]
+        acq_labels = [acq.label for acq in acq_list_failed]
         log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
+        breakpoint()
         sys.exit(1)
 
 def get_session_hdr_fields(session, site):
@@ -205,7 +211,7 @@ def get_session_hdr_fields(session, site):
         log.warning(f"{acq_0.label} contains no files.")
         return None
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.warning(f"File-classifier gear has not been run on {acq_0.label}")
+        log.warning(f"File-classifier gear has not been run on {session.label}/{acq_0.label}")
         return None
     dcm_hdr = dicom.reload().info["header"]["dicom"]
 
@@ -369,6 +375,7 @@ def pi_copy(site):
             split_session(session, hdr_df )
 
     for pi_id, acq_list in copy_dict.items():
+        breakpoint()
         pi_project_path = os.path.join(site, pi_id)
         tmp_project_label = site + '_' + pi_id
         to_copy_tag = 'to_copy_' + pi_id
@@ -389,11 +396,10 @@ def pi_copy(site):
             check_copied_acq_exist(acq_list, new_project)
         
         [acq.delete_tag(to_copy_tag) for acq in acq_list if to_copy_tag in acq.tags]
-        copied_tag = 'copied_' + pi_project
+        copied_tag = 'copied_' + pi_id
         [acq.add_tag(copied_tag) for acq in acq_list if copied_tag not in acq.tags]
-    breakpoint()      
                 
-def redcap_match(site, redcap_data, redcap_project, id_list):
+def redcap_match_mv(site, redcap_data, redcap_project, id_list):
     print(f"Checking {site} for matches")
     
     new_records = []
@@ -401,6 +407,7 @@ def redcap_match(site, redcap_data, redcap_project, id_list):
     wbhi_ids = []
     
     pre_deid_project = client.lookup('wbhi/pre-deid')
+    #pre_deid_project = client.lookup('joe_test/pre-deid')
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
     sessions = get_sessions_redcap(site_project)
@@ -410,7 +417,7 @@ def redcap_match(site, redcap_data, redcap_project, id_list):
         return
     
     for session in sessions:
-        hdr_fields = get_dicom_fields(session, site)
+        hdr_fields = get_session_hdr_fields(session, site)
         if not hdr_fields:
             continue
         matches = find_matches(hdr_fields, redcap_data)
@@ -436,9 +443,12 @@ def redcap_match(site, redcap_data, redcap_project, id_list):
             print("Failed to update records on REDCap")
         for session in wbhi_id_session_dict.values():
             tag_session(session, True)
+            session.update({'project': pre_deid_project.id})
+            breakpoint()
     else:
-        print("No matches found on REDCap")        
-                    
+        print("No matches found on REDCap")
+
+
     return id_list
 
 def main():
@@ -452,7 +462,7 @@ def main():
     
     for site in SITE_LIST:
         pi_copy(site)
-        id_list = redcap_match(site, redcap_data, redcap_project, id_list)
+        id_list = redcap_match_mv(site, redcap_data, redcap_project, id_list)
         
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
