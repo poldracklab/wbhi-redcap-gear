@@ -177,20 +177,19 @@ def check_smartcopy_loop(dst_project: str):
             log.error("Wait timeout for copy to complete")
             sys.exit(-1)
 
-def check_copied_acq_exist(acq_list, pi_project):  
+def check_copied_acq_exist(acq_list, pi_project):
+    acq_list_failed = []
     for acq in acq_list:
         sub_label = client.get_subject(acq.parents.subject).label
         ses_label = client.get_session(acq.session).label
         subject = pi_project.subjects.find_first(f'label={sub_label}')
         session = subject.sessions.find_first(f'label={ses_label}')
-        if session and session.acquisitions.find_first(f'copy_of={acq.id}'):
-            acq_list.remove(acq)
-        else:
-            sys.exit()
-    if acq_list:
+        if not session or not session.acquisitions.find_first(f'copy_of={acq.id}'):
+            acq_list_failed.append(acq)
+    if acq_list_failed:
         acq_labels = [acq.label for acq in acq_list]
         log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
-    breakpoint()
+        sys.exit(1)
 
 def get_session_hdr_fields(session, site):
     acq_list = session.acquisitions()
