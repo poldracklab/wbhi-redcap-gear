@@ -331,6 +331,8 @@ def delete_project(project_path):
 def mv_to_project(src_project, dst_project):
     print("Moving sessions from {src_project.group.id}/{src_project.project.label} to {dst_project.group.id}/{dst_project.project.label}")
     for session in src_project.sessions.iter():
+        if not session.acquisitions():
+            continue
         try:
             session.update(project=dst_project.id)
         except flywheel.ApiException as exc:
@@ -375,29 +377,29 @@ def pi_copy(site):
             split_session(session, hdr_df )
 
     for pi_id, acq_list in copy_dict.items():
-        breakpoint()
         pi_project_path = os.path.join(site, pi_id)
         tmp_project_label = site + '_' + pi_id
         to_copy_tag = 'to_copy_' + pi_id
 
         [acq.add_tag(to_copy_tag) for acq in acq_list if to_copy_tag not in acq.tags]
+        
         try:
             pi_project = client.lookup(pi_project_path)
-            tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
-            tmp_project = client.get_project(tmp_project_id)
-            check_smartcopy_loop(tmp_project)
-            mv_to_project(tmp_project, pi_project)
-            check_copied_acq_exist(acq_list, pi_project)
-            delete_project(os.path.join('tmp', tmp_project_label))
-        except flywheel.rest.ApiException:
-            new_project_id = smart_copy(site_project, site, to_copy_tag, pi_id, True)['project_id']
-            new_project = client.get_project(new_project_id)
-            check_smartcopy_loop(new_project)
-            check_copied_acq_exist(acq_list, new_project)
+        except:
+            new_project_id = client.add_project(body={'group':site, 'label':pi_id})
+            pi_project = client.lookup(pi_project_path)
+        
+        tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
+        tmp_project = client.get_project(tmp_project_id)
+        check_smartcopy_loop(tmp_project)
+        mv_to_project(tmp_project, pi_project)
+        check_copied_acq_exist(acq_list, pi_project)
+        delete_project(os.path.join('tmp', tmp_project_label))
         
         [acq.delete_tag(to_copy_tag) for acq in acq_list if to_copy_tag in acq.tags]
         copied_tag = 'copied_' + pi_id
         [acq.add_tag(copied_tag) for acq in acq_list if copied_tag not in acq.tags]
+        breakpoint()
                 
 def redcap_match_mv(site, redcap_data, redcap_project, id_list):
     print(f"Checking {site} for matches")
