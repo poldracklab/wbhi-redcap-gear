@@ -367,7 +367,7 @@ def pi_copy(site):
     site_project = client.lookup(site_project_path)
     sessions = get_sessions_pi_copy(site_project)
     copy_dict = defaultdict(list)
-        
+    
     for session in sessions:
         skip_session = False
         hdr_list = []
@@ -464,7 +464,7 @@ def redcap_match_mv(site, redcap_data, redcap_project, id_list):
             tag_session(session, True)
             subject = client.get_subject(session.parents.subject)
             subject.update({'label': wbhi_id})
-            # mv_to_project
+            mv_session(session, pre_deid_project)
     else:
         print("No matches found on REDCap")
 
@@ -482,7 +482,7 @@ def main():
 
     for site in SITE_LIST:
         pi_copy(site)
-        #id_list = redcap_match_mv(site, redcap_data, redcap_project, id_list)
+        id_list = redcap_match_mv(site, redcap_data, redcap_project, id_list)
         
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
