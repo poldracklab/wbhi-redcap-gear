@@ -421,15 +421,6 @@ def redcap_match_mv(site, redcap_data, redcap_project, id_list):
     pre_deid_project = client.lookup('wbhi/pre-deid')
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
-    
-    # DELETE BELOW!!
-    for session in site_project.sessions():
-        if 'wbhi' in session.tags:
-            session.delete_tag('wbhi')
-        for tag in session.tags:
-            if tag.startswith("redcap_"):
-                session.delete_tag(tag)
-    # DELETE ABOVE!!
 
     sessions = get_sessions_redcap(site_project)
     
