@@ -10,7 +10,6 @@ import pip
 import flywheel_gear_toolkit
 import flywheel
 import logging
-import pandas as pd
 from redcap import Project
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -199,7 +198,6 @@ def check_copied_acq_exist(acq_list, pi_project):
     if acq_list_failed:
         acq_labels = [acq.label for acq in acq_list_failed]
         log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
-        breakpoint()
         sys.exit(1)
     for session_id in session_set:
         session = client.get_session(session_id)
@@ -459,8 +457,31 @@ def redcap_match_mv(site, redcap_data, redcap_project, id_list):
     else:
         print("No matches found on REDCap")
 
-
     return id_list
+
+def deid():
+    pre_deid_project = client.lookup('wbhi/pre-deid')
+    deid_project = client.lookup('wbhi/deid')
+    deid_gear = client.lookup('gears/deid-export')
+    deid_template = pre_deid_project.get_file('deid_profile.yaml')
+    inputs = {'deid_profile': deid_template}
+    config = {
+        'project_path': 'wbhi/deid', 
+        'overwrite_files': False,
+        'debug': False
+    } 
+    for session in pre_deid_project.sessions():
+        if "deid" not in session.tags:
+            dst_subject = deid_project.subjects.find_first(f'label="{session.subject.label}"')
+            if dst_subject:
+                dst_session = dst_subject.sessions.find_first(f'label="{session.label}"')
+                if dst_session:
+                    src_acq_set = set([acq.label for acq in session.acquisitions()])
+                    dst_acq_set = set([acq.label for acq in dst_session.acquisitions()])
+                    if src_acq_set == dst_acq_set:
+                        session.add_tag('deid')
+                        continue
+            run_gear(deid_gear, inputs, config, session)
 
 def main():
     gtk_context.init_logging()
@@ -474,6 +495,7 @@ def main():
     for site in SITE_LIST:
         pi_copy(site)
         id_list = redcap_match_mv(site, redcap_data, redcap_project, id_list)
+        deid()
         
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
