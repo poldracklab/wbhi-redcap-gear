@@ -7,12 +7,20 @@ import re
 import os
 import sys
 import pip
-import flywheel_gear_toolkit
-import flywheel
+import pandas as pd
 import logging
 from redcap import Project
 from datetime import datetime, timedelta
 from collections import defaultdict
+import flywheel_gear_toolkit
+import flywheel
+from flywheel import (
+    ProjectOutput,
+    SessionListOutput,
+    AcquisitionListOutput,
+    Gear
+)
+
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr
@@ -40,7 +48,8 @@ REDCAP_KEY = {
 SITE_LIST = ["ucsb", "uci", "ucb"]
 WAIT_TIMEOUT = 3600 * 2
 
-def get_sessions_pi_copy(fw_project):
+def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
+    """Get and filter sessions for pi_copy()"""
     sessions = []
     for s in fw_project.sessions():
         if any(tag.startswith('copied_') for tag in s.tags):
@@ -48,7 +57,8 @@ def get_sessions_pi_copy(fw_project):
         sessions.append(s)
     return sessions
 
-def get_sessions_redcap(fw_project):
+def get_sessions_redcap(fw_project: ProjectOutput) -> list:
+    """Get and filter sessions for redcap_match_mv"""
     sessions = []
     today = datetime.today()
     now = datetime.utcnow()
@@ -70,7 +80,8 @@ def get_sessions_redcap(fw_project):
             sessions.append(s)
     return sessions
 
-def get_acq_hdr_fields(acq, site):
+def get_acq_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
+    """Get relevant fields from dicom header of an acquisition"""
     dicom_list = [f for f in acq.files if f.type == "dicom"]
     if dicom_list:
         dicom = dicom_list[0].reload()
@@ -91,7 +102,9 @@ def get_acq_hdr_fields(acq, site):
 
     return acq_hdr_fields
 
-def split_session(session, hdr_df):
+def split_session(session: SessionListOutput, hdr_df: pd.DataFrame()) -> None:
+    """Checks to see if a sessions is actually a combination of multiple sessions.
+    If so, logs an error and exits."""
     # To-do: actually implement splitting
     if hdr_df["pi_id"].nunique() > 1:
         logging.error(f"Need to split session {session.label}")
@@ -105,23 +118,12 @@ def split_session(session, hdr_df):
         sys.exit(1)
 
 def smart_copy(
-    src_project,
+    src_project: ProjectOutput,
     group_id: str = None,
     tag: str = None,
     dst_project_label: str = None,
     delete_existing_project = False) -> dict:
-    """Smart copy a project to a group and returns API response.
-
-    Args:
-        src_project: the source project (mandatory)
-        group_id (str): the destination Flywheel group (default: same group as
-                           source project)
-        session_list (list): list of sessions to be copied
-        dst_project_label (str): the destination project label
-
-    Returns:
-        dict: copy job response
-    """
+    """Smart copy a project to a group and returns API response."""
 
     if delete_existing_project:
         dst_project_path = os.path.join(group_id, dst_project_label)
@@ -145,15 +147,8 @@ def smart_copy(
     return client.project_copy(src_project.id, data)
 
 
-def check_smartcopy_job_complete(dst_project) -> bool:
-    """Check if a smart copy job is complete.
-
-    Args:
-        dst_project (str): the destination project id
-
-    Returns:
-        bool: True if the job is complete, False otherwise
-    """
+def check_smartcopy_job_complete(dst_project: ProjectOutput) -> bool:
+    """Check if a smart copy job is complete."""
     copy_status = dst_project.reload().copy_status
     if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
         return True
@@ -162,7 +157,9 @@ def check_smartcopy_job_complete(dst_project) -> bool:
     else:
         return False
 
-def check_smartcopy_loop(dst_project: str):
+def check_smartcopy_loop(dst_project: str) -> None:
+    """Wrapper for check_smartcopy_job_complete. Loops until smart-copy is complete
+    or until timeout."""
     start_time = time.time()
     while True:
         time.sleep(5)
@@ -173,7 +170,8 @@ def check_smartcopy_loop(dst_project: str):
             log.error("Wait timeout for copy to complete")
             sys.exit(-1)
 
-def check_copied_acq_exist(acq_list, pi_project):
+def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
+    """Check that all smart-copied acquisitions exist in the destination project."""
     acq_list_failed = []
     session_set = set()
     
@@ -204,9 +202,8 @@ def check_copied_acq_exist(acq_list, pi_project):
         if all(copied_tag in acq.tags for acq in session.acquisitions()):
             session.add_tag(copied_tag)
 
-    
-
-def get_session_hdr_fields(session, site):
+def get_session_hdr_fields(session: SessionListOutput, site: str) -> dict:
+    """Get relevant fields from header of first dicom in session."""
     acq_list = session.acquisitions()
     acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
     if not acq_sorted:
@@ -231,7 +228,8 @@ def get_session_hdr_fields(session, site):
     hdr_fields["pi_id"], hdr_fields["sub_id"] = parse_dicom_hdr.parse_pi_sub(dcm_hdr, site)
     return hdr_fields
 
-def find_matches(hdr_fields, redcap_data):
+def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
+    """Finds redcap records that match relevant header fields of a dicom."""
     matches = []
     for record in reversed(redcap_data):
         if (record["icf_consent"] == "1"
@@ -253,7 +251,9 @@ def find_matches(hdr_fields, redcap_data):
     else: 
         return matches
 
-def generate_wbhi_id(matches, site, id_list):
+def generate_wbhi_id(matches: list, site: str, id_list: list) -> tuple[str, list]:
+    """Generates a unique WBHI-ID for a subject, or pulls it from redcap if a
+    WBHI-ID already exists for this match (in the "rid" field)"""
     wbhi_id_prefix = SITE_KEY[site]
     
     for match in matches:
@@ -269,7 +269,7 @@ def generate_wbhi_id(matches, site, id_list):
             id_list.append(wbhi_id)
             return wbhi_id, id_list
             
-def tag_session(session, wbhi):
+def tag_session(session: SessionListOutput, wbhi: bool) -> None:
     redcap_tags = [tag for tag in session.tags if tag.startswith('redcap')]
     if wbhi:
         session.add_tag("wbhi")
@@ -292,7 +292,8 @@ def tag_session(session, wbhi):
         new_redcap_tag = "redcap_" + str(n + 1) + "_" + new_tag_date_str
         session.add_tag(new_redcap_tag)    
 
-def rename_session(session):
+def rename_session(session: SessionListOutput) -> None:
+    """Renames session to '01', or the next available number if existing sessions."""
     sub_sessions = session.subject.sessions()
     if len(sub_sessions) == 1:
         new_session_label = '01'
@@ -305,20 +306,13 @@ def rename_session(session):
     session.update({'label': new_session_label})
     print(f"Renamed session {session.label} to {new_session_label}")
 
-def run_gear(gear, inputs, config, dest, tags=None):
-    """Submits a job with specified gear and inputs.
-    
-    Args:
-        gear (flywheel.Gear): A Flywheel Gear.
-        inputs (dict): Input dictionary for the gear.
-        config (dict): Configuration for the gear
-        dest (flywheel.container): A Flywheel Container where the output will be stored.
-        tags (list): List of tags if any
-        
-    Returns:
-        str: The id of the submitted job.
-        
-    """
+def run_gear(
+    gear: flywheel.Gear,
+    inputs: dict,
+    config: dict,
+    dest,
+    tags=None) -> str:
+    """Submits a job with specified gear and inputs."""
     try:
         # Run the gear on the inputs provided, stored output in dest constainer and returns job ID
         gear_job_id = gear.run(inputs=inputs, config=config, destination=dest, tags=tags)
@@ -327,7 +321,8 @@ def run_gear(gear, inputs, config, dest, tags=None):
     except flywheel.rest.ApiException:
         log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
 
-def delete_project(project_path):
+def delete_project(project_path: str) -> None:
+    """Deletes a project."""
     try: 
         project = client.lookup(project_path)
         client.delete_project(project.id)
@@ -335,7 +330,8 @@ def delete_project(project_path):
     except flywheel.rest.ApiException:
         print(f"Project {project_path} does not exist")
         
-def mv_session(session, dst_project):
+def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
+    """Moves a session to another project."""
     try:
         session.update(project=dst_project.id)
     except flywheel.ApiException as exc:
@@ -351,16 +347,22 @@ def mv_session(session, dst_project):
             client.bulk_move_sessions(body=body)
         else:
             log.exception(
-                f"Error moving subject {session.subject.label}/{session.label} from {src_project.label} to {dst_project.label}"
+                f"Error moving subject {session.subject.label}/{session.label} \
+                from {src_project.label} to {dst_project.label}"
             )
             
-def mv_to_project(src_project, dst_project):
-    print(f"Moving sessions from {src_project.group}/{src_project.label} to {dst_project.group}/{dst_project.label}")
+def mv_all_to_project(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
+    """Moves all non-empty sessions from one project to another"""
+    print(f"Moving sessions from {src_project.group}/{src_project.label} to \
+    {dst_project.group}/{dst_project.label}")
     non_empty_sessions = [s for s in src_project.sessions() if s.acquisitions()]
     for session in non_empty_sessions:
         mv_session(session, dst_project)
         
-def pi_copy(site):
+def pi_copy(site: str) -> None:
+    """Finds acquisitions in the site's 'Inbound Data' project that haven't
+    been smart-copied yet. Determines the pi-id from the dicom and smart-copies
+    to project named after pi-id."""
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
     sessions = get_sessions_pi_copy(site_project)
@@ -406,13 +408,20 @@ def pi_copy(site):
         tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
         tmp_project = client.get_project(tmp_project_id)
         check_smartcopy_loop(tmp_project)
-        mv_to_project(tmp_project, pi_project)
+        mv_all_to_project(tmp_project, pi_project)
         check_copied_acq_exist(acq_list, pi_project)
         delete_project(os.path.join('tmp', tmp_project_label))
                 
-def redcap_match_mv(site, redcap_data, redcap_project, id_list):
+def redcap_match_mv(
+    site: str,
+    redcap_data: list,
+    redcap_project: Project,
+    id_list: list) -> list:
+    """Find sessions that haven't been checked or that are scheduled to be checked today.
+    Pulls relevant fields from dicom and checks for matches with redcap records. If matches,
+    generate unique WBHI-ID and assign to flywheel subject and matching records (or pull from
+    redcap if WBHI-ID already exists.) Finally, move matching subjects to wbhi/pre-deid project."""
     print(f"Checking {site} for matches")
-    
     new_records = []
     wbhi_id_session_dict = {}
     
@@ -459,7 +468,12 @@ def redcap_match_mv(site, redcap_data, redcap_project, id_list):
 
     return id_list
 
-def deid():
+def deid() -> None:
+    """Runs the deid-export gear for any acquisitions in wbhi/pre-deid for which
+    it hasn't already been run. Since the gear doesn't wait to check if the 
+    deid-export runs are successful, it checks if each acquisition already exists in
+    the destination project (wbhi/deid) prior to running, and tags and ignores if 
+    already exists."""
     pre_deid_project = client.lookup('wbhi/pre-deid')
     deid_project = client.lookup('wbhi/deid')
     deid_gear = client.lookup('gears/deid-export')
