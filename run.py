@@ -255,7 +255,7 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
                 and record[f"{mri_pi_field}_other"].casefold() == hdr_fields["pi_id"])):
 
                 matches.append(record)
-    
+
     return matches
 
 def generate_wbhi_id(matches: list, site: str, id_list: list) -> str:
@@ -406,7 +406,7 @@ def pi_copy(site: str) -> None:
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
     to project named after pi-id."""
     log.info(f"Checking {site} acquisitions to smart-copy.")
-    site_project = client.lookup(site + '/Inbound Data')
+    site_project = client.lookup(f"{site}/Inbound Data")
     sessions = get_sessions_pi_copy(site_project)
     copy_dict = defaultdict(list)
     
@@ -451,12 +451,11 @@ def redcap_match_mv(
     wbhi_id_session_dict = {}
     
     pre_deid_project = client.lookup('wbhi/pre-deid')
-    site_project_path = site + '/Inbound Data'
-    site_project = client.lookup(site_project_path)
+    site_project = client.lookup(f"{site}/Inbound Data")
     sessions = get_sessions_redcap(site_project)
     
     if not sessions:
-        log.info(f"No sessions were checked for {site_project_path}")
+        log.info(f"No sessions were checked for {site}/Inbound Data.")
         return
     
     for session in sessions:
@@ -478,16 +477,20 @@ def redcap_match_mv(
             tag_session_redcap(session)
         
     if new_records:
+        # Import updated records into RedCap
         response = redcap_project.import_records(new_records)
-        if response["count"] > 0:
-            log.info(f"Updated records on REDCap to include newly generated wbhi-id(s): {wbhi_id_session_dict}")
+        if response["count"] == len(new_records):
+            for wbhi_id, session in wbhi_id_session_dict.items():
+                tag_session_wbhi(session)
+                subject = client.get_subject(session.parents.subject)
+                subject.update({'label': wbhi_id})
+                mv_session(session, pre_deid_project)
+            log.info(
+                f"Updated REDCap and Flywheel to include newly generated wbhi-id(s): "
+                "{wbhi_id_session_dict}"
+            )
         else:
             log.error("Failed to update records on REDCap")
-        for wbhi_id, session in wbhi_id_session_dict.items():
-            tag_session_wbhi(session)
-            subject = client.get_subject(session.parents.subject)
-            subject.update({'label': wbhi_id})
-            mv_session(session, pre_deid_project)
     else:
         log.info("No matches found on REDCap")
 
@@ -509,7 +512,9 @@ def deid() -> None:
     } 
     for session in pre_deid_project.sessions():
         if "deid" not in session.tags:
-            dst_subject = deid_project.subjects.find_first(f'label="{session.subject.label}"')
+            # If already deid, tag and ignore
+            sub_label = client.get_subject(session.parents.subject)
+            dst_subject = deid_project.subjects.find_first(f'label="{sub_label}"')
             if dst_subject:
                 dst_session = dst_subject.sessions.find_first(f'label="{session.label}"')
                 if dst_session:
@@ -518,6 +523,7 @@ def deid() -> None:
                     if src_acq_set == dst_acq_set:
                         session.add_tag('deid')
                         continue
+            # Otherwise, run deid gear
             run_gear(deid_gear, inputs, config, session)
 
 def main():
@@ -540,3 +546,4 @@ if __name__ == "__main__":
         client = gtk_context.client
         
         main()
+
