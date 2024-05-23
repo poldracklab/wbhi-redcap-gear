@@ -21,7 +21,6 @@ from flywheel import (
     Gear
 )
 
-
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr
 
@@ -30,7 +29,7 @@ DATE_FORMAT_FW = "%Y%m%d"
 DATETIME_FORMAT_FW = "%Y%m%d %H%M%S.%f"
 DATE_FORMAT_RC = "%Y-%m-%d"
 REDCAP_API_URL = "https://redcap.stanford.edu/api/"
-WBHI_ID_LENGTH = 5 # An additional character corresponding to site will be prepended
+WBHI_ID_SUFFIX_LENGTH = 5 # An additional character corresponding to site will be prepended
 SITE_KEY = {
         "ucsb": "A",
         "ucb": "B",
@@ -40,9 +39,9 @@ SITE_KEY = {
         "stanford": "F"
     }
 REDCAP_KEY = {
-    "before_noon": {
-        True: "1",
-        False: "2"
+    "am_pm": {
+        "am": "1",
+        "pm": "2"
     }
 }
 SITE_LIST = ["ucsb", "uci", "ucb"]
@@ -51,10 +50,10 @@ WAIT_TIMEOUT = 3600 * 2
 def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
     """Get and filter sessions for pi_copy()"""
     sessions = []
-    for s in fw_project.sessions():
-        if any(tag.startswith('copied_') for tag in s.tags):
+    for session in fw_project.sessions():
+        if any(tag.startswith('copied_') for tag in session.tags):
             continue
-        sessions.append(s)
+        sessions.append(session)
     return sessions
 
 def get_sessions_redcap(fw_project: ProjectOutput) -> list:
@@ -62,58 +61,82 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     sessions = []
     today = datetime.today()
     now = datetime.utcnow()
-    for s in fw_project.sessions():
-        if "skip_redcap" in s.tags:
+    for session in fw_project.sessions():
+        if "skip_redcap" in session.tags:
             continue
-        timestamp = s.timestamp.replace(tzinfo=None)
-        if now - timestamp < timedelta(days=config["ignore_until_n_days_old"]):
+            
+        # Remove timezone info from timestamp
+        timestamp = session.timestamp.replace(tzinfo=None)
+        if (now - timestamp) < timedelta(days=config["ignore_until_n_days_old"]):
             continue
-        redcap_tags = [t for t in s.tags if t.startswith('redcap')]
+
+        redcap_tags = [t for t in session.tags if t.startswith('redcap')]
         if not redcap_tags:
-            sessions.append(s)
+            sessions.append(session)
             continue
         elif len(redcap_tags) > 1:
+            log.warning(f"{session.label} has multiple redcap tags: {redcap_tags}")
             redcap_tags = [sorted(redcap_tags)[-1]]
         tag_date_str = redcap_tags[0].split('_')[-1]
         tag_date = datetime.strptime(tag_date_str, DATE_FORMAT_FW)
         if tag_date <= today:
-            sessions.append(s)
+            sessions.append(session)
     return sessions
 
-def get_acq_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
+def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
     dicom_list = [f for f in acq.files if f.type == "dicom"]
-    if dicom_list:
-        dicom = dicom_list[0].reload()
-    else:
-        log.warning(f"{acq.label} contains no files.")
-        return None
+    if not dicom_list:
+        log.warning(f"{acq.label} contains no dicoms.")
+        return {"error": "NO_DICOMS"}
+    if len(dicom_list) > 1:
+        log.warning(f"{acq.label} contains multiple dicoms")
+    dicom = dicom_list[0].reload()
+
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
         sub_label = client.get_subject(acq.parents.subject).label
         log.error(f"File-classifier gear has not been run on {sub_label}/{acq.label}")
-        return 'file_classifier_not_run'
-
+        return {"error": "FILE_CLASSIFIER_NOT_RUN"}
+    
     dcm_hdr = dicom.info["header"]["dicom"]
-    acq_hdr_fields = {}
-    acq_hdr_fields["acq"] = acq
-    acq_hdr_fields["pi_id"] = parse_dicom_hdr.parse_pi_sub(dcm_hdr, site)[0].casefold()
-    series_datetime_str = dcm_hdr["SeriesDate"] + ' ' + dcm_hdr["SeriesTime"]
-    acq_hdr_fields["series_datetime"] = datetime.strptime(series_datetime_str, DATETIME_FORMAT_FW)
+    return {
+        "error": None,
+        "acq": acq,
+        "site": site,
+        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
+        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
+        "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
+        "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
+        "series_datetime": datetime.strptime(
+            f"{dcm_hdr['SeriesDate']} {dcm_hdr['SeriesTime']}",
+            DATETIME_FORMAT_FW
+        )
+    }
 
-    return acq_hdr_fields
-
-def split_session(session: SessionListOutput, hdr_df: pd.DataFrame()) -> None:
+def split_session(session: SessionListOutput, hdr_list: list) -> None:
     """Checks to see if a sessions is actually a combination of multiple sessions.
-    If so, logs an error and exits."""
-    # To-do: actually implement splitting
+    If so, logs an error and exits.
+    
+    To-do: actually implement splitting
+    """
+    hdr_df = pd.DataFrame(hdr_list)
+    
+    # Don't split if file classifier gear hasn't been run on all acquisitions
+    if "FILE_CLASSIFIER_NOT_RUN" in hdr_df["error"].values:
+        return
+    
+    need_to_split = False
     if hdr_df["pi_id"].nunique() > 1:
-        logging.error(f"Need to split session {session.label}")
-        sys.exit(1)
+        need_to_split = True
+
+    # Make sure the gaps between start times of consecutive acquisitions < 4 hrs
     hdr_df_sorted = hdr_df.sort_values(by="series_datetime")
     time_diff = hdr_df_sorted["series_datetime"].diff()
     threshold = pd.Timedelta(hours=4)
-    max_diff = time_diff.max()
-    if max_diff > threshold:
+    if time_diff.max() > threshold:
+        need_to_split = True
+    
+    if need_to_split:
         logging.error(f"Need to split session {session.label}")
         sys.exit(1)
 
@@ -142,7 +165,10 @@ def smart_copy(
     }
 
     data["filter"]["include_rules"].append(f"acquisition.tags={tag}")
-    print(f'Smart-copying acquisition labeled "{tag}" from "{src_project.label}" to "{group_id}/{dst_project_label}')
+    log.info(
+        f'Smart-copying acquisition labeled "{tag}" from "{src_project.label}" '
+        'to "{group_id}/{dst_project_label}'
+    )
 
     return client.project_copy(src_project.id, data)
 
@@ -162,135 +188,123 @@ def check_smartcopy_loop(dst_project: str) -> None:
     or until timeout."""
     start_time = time.time()
     while True:
-        time.sleep(5)
         if check_smartcopy_job_complete(dst_project):
             log.info(f"Copy project to {dst_project.id} complete")
             return
         if time.time() - start_time > WAIT_TIMEOUT:
             log.error("Wait timeout for copy to complete")
-            sys.exit(-1)
+            sys.exit(1)
+        time.sleep(5)
 
 def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
     """Check that all smart-copied acquisitions exist in the destination project."""
     acq_list_failed = []
     session_set = set()
     
-    pi_id = pi_project.label
-    to_copy_tag = 'to_copy_' + pi_id
-    copied_tag = 'copied_' + pi_id
+    to_copy_tag = 'to_copy_' + pi_project.label
+    copied_tag = 'copied_' + pi_project.label
     
     for acq in acq_list:
-        session_set.add(acq.session)
+        session_set.add(acq.parents.session)
         sub_label = client.get_subject(acq.parents.subject).label
-        ses_label = client.get_session(acq.session).label
-        subject = pi_project.subjects.find_first(f'label="{sub_label}"')
-        if not subject:
+        ses_label = client.get_session(acq.parents.session).label
+        dst_subject = pi_project.subjects.find_first(f'label="{sub_label}"')
+        if not dst_subject:
             acq_list_failed.append(acq)
             continue
-        session = subject.sessions.find_first(f'label="{ses_label}"')
-        if not session or not session.acquisitions.find_first(f'copy_of={acq.id}'):
+        dst_session = subject.sessions.find_first(f'label="{ses_label}"')
+        if not dst_session or not dst_session.acquisitions.find_first(f'copy_of={acq.id}'):
             acq_list_failed.append(acq)
         else:
             acq.delete_tag(to_copy_tag)
             acq.add_tag(copied_tag)
+
     if acq_list_failed:
         acq_labels = [acq.label for acq in acq_list_failed]
         log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
         sys.exit(1)
+
+    # Tag session if all acqs are tagged to save time when filtering sessions in future runs
     for session_id in session_set:
         session = client.get_session(session_id)
         if all(copied_tag in acq.tags for acq in session.acquisitions()):
             session.add_tag(copied_tag)
 
-def get_session_hdr_fields(session: SessionListOutput, site: str) -> dict:
-    """Get relevant fields from header of first dicom in session."""
+def get_first_acq(session: SessionListOutput) -> AcquisitionListOutput | None:
+    """Gets first acquisition in session."""
     acq_list = session.acquisitions()
     acq_sorted = sorted(acq_list, key=lambda d: d.timestamp)
-    if not acq_sorted:
-        return None
-    acq_0 = acq_sorted[0]
-    file_list = acq_0.files
-    dicom_list = [f for f in file_list if f.type == "dicom"]
-    if dicom_list:
-        dicom = dicom_list[0].reload()
-    else:
-        log.warning(f"{acq_0.label} contains no files.")
-        return None
-    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.warning(f"File-classifier gear has not been run on {session.label}/{acq_0.label}")
-        return None
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
-    
-    hdr_fields = {}
-    hdr_fields["site"] = site
-    hdr_fields["date"] = datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW)
-    hdr_fields["before_noon"] = float(dcm_hdr["StudyTime"]) < 120000
-    hdr_fields["pi_id"], hdr_fields["sub_id"] = parse_dicom_hdr.parse_pi_sub(dcm_hdr, site)
-    return hdr_fields
+    if acq_sorted:
+        return acq_sorted[0]
 
 def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
     """Finds redcap records that match relevant header fields of a dicom."""
     matches = []
+    # Start with most recent records
     for record in reversed(redcap_data):
         if (record["icf_consent"] == "1"
             and record["consent_complete"] == "2"
             and record["site"] == hdr_fields["site"]
             and datetime.strptime(record["mri_date"], DATE_FORMAT_RC) == hdr_fields["date"] 
-            and record["mri_ampm"] == REDCAP_KEY["before_noon"][hdr_fields["before_noon"]]
-            and record["mri"].casefold() == hdr_fields["sub_id"].casefold()):
+            and record["mri_ampm"] == REDCAP_KEY["am_pm"][hdr_fields["am_pm"]]
+            and record["mri"].casefold() == hdr_fields["sub_id"]):
             
             mri_pi_field = "mri_pi_" + hdr_fields["site"]
-            if (record[mri_pi_field].casefold() == hdr_fields["pi_id"].casefold() 
+            if (record[mri_pi_field].casefold() == hdr_fields["pi_id"] 
                 or (record[mri_pi_field] == '99'
-                and record[mri_pi_field + "_other"].casefold() == hdr_fields["pi_id"].casefold())):
+                and record[f"{mri_pi_field}_other"].casefold() == hdr_fields["pi_id"])):
 
                 matches.append(record)
     
-    if not matches:
-        return None
-    else: 
-        return matches
+    return matches
 
-def generate_wbhi_id(matches: list, site: str, id_list: list) -> tuple[str, list]:
+def generate_wbhi_id(matches: list, site: str, id_list: list) -> str:
     """Generates a unique WBHI-ID for a subject, or pulls it from redcap if a
-    WBHI-ID already exists for this match (in the "rid" field)"""
+    WBHI-ID already exists for this match (in the "rid" field). Also mutates
+    id_list if a new WBHI-ID is generated."""
     wbhi_id_prefix = SITE_KEY[site]
     
     for match in matches:
+        # Use pre-existing WBHI-ID from redcap record
         if match["rid"] and match["rid"].strip():
             wbhi_id = match["rid"]
-            id_list.append(wbhi_id)
-            return wbhi_id, id_list
-    
+            return wbhi_id
+            
+    # Generate ID and make sure it's unique
     while True:
-        wbhi_id_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=WBHI_ID_LENGTH))
+        wbhi_id_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=WBHI_ID_SUFFIX_LENGTH))
         wbhi_id = wbhi_id_prefix + wbhi_id_suffix
         if wbhi_id not in id_list:
             id_list.append(wbhi_id)
-            return wbhi_id, id_list
+            return wbhi_id
             
-def tag_session(session: SessionListOutput, wbhi: bool) -> None:
+def tag_session_wbhi(session: SessionListOutput) -> None:
+    """Tags a session with 'wbhi' and removes any redcap tags"""
     redcap_tags = [tag for tag in session.tags if tag.startswith('redcap')]
-    if wbhi:
-        session.add_tag("wbhi")
-        if redcap_tags:
-            for tag in redcap_tags:
-                session.delete_tag(tag)
-        for acq in session.acquisitions():
-            for f in acq.files:
-                f.add_tag("wbhi")
+    session.add_tag("wbhi")
+    if redcap_tags:
+        for tag in redcap_tags:
+            session.delete_tag(tag)
+    for acq in session.acquisitions():
+        for f in acq.files:
+            f.add_tag("wbhi")
+
+def tag_session_redcap(session: SessionListOutput) -> None:
+    """Tags with redcap tag containing the date for the next check by this gear."""
+    redcap_tags = [tag for tag in session.tags if tag.startswith('redcap')]
+    if redcap_tags:
+        redcap_tag = sorted(redcap_tags)[-1]
+        n = int(redcap_tag.split("_")[1])
+        for tag in redcap_tags:
+            session.delete_tag(tag)
     else:
-        if redcap_tags:
-            redcap_tag = sorted(redcap_tags)[-1]
-            n = int(redcap_tag.split("_")[1])
-            for tag in redcap_tags:
-                session.delete_tag(tag)
-        else:
-            n = 0
-        new_tag_date = datetime.today() + timedelta(days=2**n)
-        new_tag_date_str = new_tag_date.strftime(DATE_FORMAT_FW)
-        new_redcap_tag = "redcap_" + str(n + 1) + "_" + new_tag_date_str
-        session.add_tag(new_redcap_tag)    
+        n = 0
+
+    # Number of days until next check increases by factor of 2 each time, maxing at 32 days
+    new_tag_date = datetime.today() + timedelta(days=2**min(5,n))
+    new_tag_date_str = new_tag_date.strftime(DATE_FORMAT_FW)
+    new_redcap_tag = "redcap_" + str(n + 1) + "_" + new_tag_date_str
+    session.add_tag(new_redcap_tag)    
 
 def rename_session(session: SessionListOutput) -> None:
     """Renames session to '01', or the next available number if existing sessions."""
@@ -299,12 +313,13 @@ def rename_session(session: SessionListOutput) -> None:
         new_session_label = '01'
     else:
         sub_sessions_sorted = sorted(sub_sessions, key=lambda d: d.timestamp)
-        zero_pad = max(len(str(len(sub_sessions_sorted))), 2)
+        num_digits = len(str(len(sub_sessions_sorted)))
+        zero_pad = max(num_digits, 2)
         for i, session in enumerate(sub_sessions_sorted, 1):
             new_session_label = str(i).zfill(zero_pad)
             
     session.update({'label': new_session_label})
-    print(f"Renamed session {session.label} to {new_session_label}")
+    log.info(f"Renamed session {session.label} to {new_session_label}")
 
 def run_gear(
     gear: flywheel.Gear,
@@ -312,7 +327,8 @@ def run_gear(
     config: dict,
     dest,
     tags=None) -> str:
-    """Submits a job with specified gear and inputs."""
+    """Submits a job with specified gear and inputs. dest can be any type of container
+    that is compatible with the gear (project, subject, session, acquisition)"""
     try:
         # Run the gear on the inputs provided, stored output in dest constainer and returns job ID
         gear_job_id = gear.run(inputs=inputs, config=config, destination=dest, tags=tags)
@@ -326,9 +342,9 @@ def delete_project(project_path: str) -> None:
     try: 
         project = client.lookup(project_path)
         client.delete_project(project.id)
-        print(f"Successfully deleted project {project_path}")
+        log.info(f"Successfully deleted project {project_path}")
     except flywheel.rest.ApiException:
-        print(f"Project {project_path} does not exist")
+        log.error(f"Tried to delete {project_path} but it does not exist")
         
 def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
     """Moves a session to another project."""
@@ -347,126 +363,133 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
             client.bulk_move_sessions(body=body)
         else:
             log.exception(
-                f"Error moving subject {session.subject.label}/{session.label} \
-                from {src_project.label} to {dst_project.label}"
+                f"Error moving subject {session.subject.label}/{session.label}"
+                "from {src_project.label} to {dst_project.label}"
             )
             
-def mv_all_to_project(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
+def mv_all_sessions(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
     """Moves all non-empty sessions from one project to another"""
-    print(f"Moving sessions from {src_project.group}/{src_project.label} to \
-    {dst_project.group}/{dst_project.label}")
-    non_empty_sessions = [s for s in src_project.sessions() if s.acquisitions()]
-    for session in non_empty_sessions:
-        mv_session(session, dst_project)
-        
+    log.info(
+        f"Moving all non-empty sessions from {src_project.group}/{src_project.label} to "
+        "{dst_project.group}/{dst_project.label}"
+    )
+    for session in src_project.sessions():
+        if session.acquisitions():
+            mv_session(session, dst_project)
+            
+def smarter_copy(acq_list: list, src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
+    """Since smart-copy can't copy to an existing project, this function smart-copies
+    all acquisitions from acq_list to a tmp project, waits for it to complete, moves 
+    the sessions to the existing project, checks that they exist in the destination project,
+    then deletes the tmp."""
+    to_copy_tag = f"to_copy_{dst_project.label}"
+    tmp_project_label = f"{dst_project.group}_{dst_project.label}"
+    
+    for acq in acq_list:
+        if to_copy_tag not in acq.tags:
+            acq.add_tag(to_copy_tag)
+            
+    tmp_project_id = smart_copy(
+        src_project,
+        'tmp',
+        to_copy_tag,
+        tmp_project_labels,
+        True)["project_id"]
+    tmp_project = client.get_project(tmp_project_id)
+    check_smartcopy_loop(tmp_project)
+    mv_all_sessions(tmp_project, dst_project)
+    check_copied_acq_exist(acq_list, dst_project)
+    delete_project(os.path.join('tmp', tmp_project_label))
+    
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
     to project named after pi-id."""
-    site_project_path = site + '/Inbound Data'
-    site_project = client.lookup(site_project_path)
+    log.info(f"Checking {site} acquisitions to smart-copy.")
+    site_project = client.lookup(site + '/Inbound Data')
     sessions = get_sessions_pi_copy(site_project)
     copy_dict = defaultdict(list)
     
     for session in sessions:
-        skip_session = False
         hdr_list = []
         for acq in session.acquisitions():
-            acq_hdr_fields = get_acq_hdr_fields(acq, site)
-            if not acq_hdr_fields:
-                continue
-            elif acq_hdr_fields == 'file_classifier_not_run':
-                skip_session = True
+            acq_hdr_fields = get_hdr_fields(acq, site)
+            if acq_hdr_fields["error"]:
                 continue
             hdr_list.append(acq_hdr_fields)
             if acq_hdr_fields["pi_id"].isalnum():
                 pi_id = acq_hdr_fields["pi_id"]
             else:
                 pi_id = "other"
-            copied_tag = 'copied_' + pi_id
-            if copied_tag not in acq.tags:
+            if f"copied_{pi_id}" not in acq.tags:
                 copy_dict[pi_id].append(acq)
  
-        if skip_session == True:
-            continue
         if hdr_list:
-            hdr_df = pd.DataFrame(hdr_list)
-            split_session(session, hdr_df )
+            split_session(session, hdr_list)
 
+    group = client.get_group(site)
     for pi_id, acq_list in copy_dict.items():
-        pi_project_path = os.path.join(site, pi_id)
-        tmp_project_label = site + '_' + pi_id
-        to_copy_tag = 'to_copy_' + pi_id
-        [acq.add_tag(to_copy_tag) for acq in acq_list if to_copy_tag not in acq.tags]
-
-        try:
-            pi_project = client.lookup(pi_project_path)
-        except:
+        pi_project = group.projects.find_first(f"label={pi_id}")
+        if not pi_project:
             new_project_id = client.add_project(body={'group':site, 'label':pi_id})
-            pi_project = client.lookup(pi_project_path)
+            pi_project = client.lookup(os.path.join(site, pi_id))
         
-        tmp_project_id = smart_copy(site_project, 'tmp', to_copy_tag, tmp_project_label, True)["project_id"]
-        tmp_project = client.get_project(tmp_project_id)
-        check_smartcopy_loop(tmp_project)
-        mv_all_to_project(tmp_project, pi_project)
-        check_copied_acq_exist(acq_list, pi_project)
-        delete_project(os.path.join('tmp', tmp_project_label))
+        smarter_copy(acq_list, site_project, pi_project)
+
                 
 def redcap_match_mv(
     site: str,
     redcap_data: list,
     redcap_project: Project,
-    id_list: list) -> list:
+    id_list: list) -> None:
     """Find sessions that haven't been checked or that are scheduled to be checked today.
     Pulls relevant fields from dicom and checks for matches with redcap records. If matches,
     generate unique WBHI-ID and assign to flywheel subject and matching records (or pull from
     redcap if WBHI-ID already exists.) Finally, move matching subjects to wbhi/pre-deid project."""
-    print(f"Checking {site} for matches")
+    log.info(f"Checking {site} for matches with redcap.")
     new_records = []
     wbhi_id_session_dict = {}
     
     pre_deid_project = client.lookup('wbhi/pre-deid')
     site_project_path = site + '/Inbound Data'
     site_project = client.lookup(site_project_path)
-
     sessions = get_sessions_redcap(site_project)
     
     if not sessions:
-        print(f"No sessions were checked for {site_project_path}")
+        log.info(f"No sessions were checked for {site_project_path}")
         return
     
     for session in sessions:
-        hdr_fields = get_session_hdr_fields(session, site)
-        if not hdr_fields:
+        first_acq = get_first_acq(session)
+        if not first_acq:
             continue
+        hdr_fields = get_hdr_fields(session, site)
+        if hdr_fields["error"]:
+            continue
+        
         matches = find_matches(hdr_fields, redcap_data)
-    
         if matches:
-            wbhi_id, id_list = generate_wbhi_id(matches, site, id_list)
+            wbhi_id = generate_wbhi_id(matches, site, id_list)
             wbhi_id_session_dict[wbhi_id] = session
             for match in matches:
                 match["rid"] = wbhi_id
                 new_records.append(match)
         else:
-            tag_session(session, False)
+            tag_session_redcap(session)
         
     if new_records:
         response = redcap_project.import_records(new_records)
         if response["count"] > 0:
-            print("Updated records on REDCap to include newly generated wbhi-id(s):")
-            for wbhi_id in wbhi_id_session_dict.keys():
-                print(wbhi_id)
+            log.info(f"Updated records on REDCap to include newly generated wbhi-id(s): {wbhi_id_session_dict}")
         else:
-            print("Failed to update records on REDCap")
+            log.error("Failed to update records on REDCap")
         for wbhi_id, session in wbhi_id_session_dict.items():
-            tag_session(session, True)
+            tag_session_wbhi(session)
             subject = client.get_subject(session.parents.subject)
             subject.update({'label': wbhi_id})
             mv_session(session, pre_deid_project)
     else:
-        print("No matches found on REDCap")
-
-    return id_list
+        log.info("No matches found on REDCap")
 
 def deid() -> None:
     """Runs the deid-export gear for any acquisitions in wbhi/pre-deid for which
@@ -508,7 +531,7 @@ def main():
 
     for site in SITE_LIST:
         pi_copy(site)
-        id_list = redcap_match_mv(site, redcap_data, redcap_project, id_list)
+        redcap_match_mv(site, redcap_data, redcap_project, id_list)
         deid()
         
 if __name__ == "__main__":
