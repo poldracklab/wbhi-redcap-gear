@@ -82,20 +82,26 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
         if tag_date <= today:
             sessions.append(session)
     return sessions
+    
+def get_acq_path(acq: AcquisitionListOutput) -> str:
+    """Takes an acquisition and returns its path: 
+    project/subject/session/acquisition"""
+    project_label = client.get_project(acq.parents.project).label
+    sub_label = client.get_subject(acq.parents.subject).label
+    ses_label = client.get_session(acq.parents.session).label
+    
+    return f"{project_label}/{sub_label}/{ses_label}/{acq.label}"
 
 def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
     dicom_list = [f for f in acq.files if f.type == "dicom"]
     if not dicom_list:
-        log.warning(f"{acq.label} contains no dicoms.")
+        log.warning(f"{get_acq_path(acq)} contains no dicoms.")
         return {"error": "NO_DICOMS"}
-    if len(dicom_list) > 1:
-        log.warning(f"{acq.label} contains multiple dicoms")
     dicom = dicom_list[0].reload()
 
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        sub_label = client.get_subject(acq.parents.subject).label
-        log.error(f"File-classifier gear has not been run on {sub_label}/{acq.label}")
+        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
     
     dcm_hdr = dicom.info["header"]["dicom"]
@@ -149,8 +155,7 @@ def smart_copy(
     """Smart copy a project to a group and returns API response."""
 
     if delete_existing_project:
-        dst_project_path = os.path.join(group_id, dst_project_label)
-        delete_project(dst_project_path)
+        delete_project(group_id, dst_project_label)
 
     data = {
         "group_id": group_id,
@@ -212,7 +217,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
         if not dst_subject:
             acq_list_failed.append(acq)
             continue
-        dst_session = subject.sessions.find_first(f'label="{ses_label}"')
+        dst_session = dst_subject.sessions.find_first(f'label="{ses_label}"')
         if not dst_session or not dst_session.acquisitions.find_first(f'copy_of={acq.id}'):
             acq_list_failed.append(acq)
         else:
@@ -337,14 +342,14 @@ def run_gear(
     except flywheel.rest.ApiException:
         log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
 
-def delete_project(project_path: str) -> None:
+def delete_project(group_id: str, project_label) -> None:
     """Deletes a project."""
-    try: 
-        project = client.lookup(project_path)
-        client.delete_project(project.id)
-        log.info(f"Successfully deleted project {project_path}")
-    except flywheel.rest.ApiException:
-        log.error(f"Tried to delete {project_path} but it does not exist")
+    group = client.get_group(group_id)
+    if group:
+        project = group.projects.find_first(f"label={project_label}")
+        if project:
+            client.delete_project(project.id)
+            log.info(f"Deleted project {group_id}/{project_label}")
         
 def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
     """Moves a session to another project."""
@@ -393,13 +398,13 @@ def smarter_copy(acq_list: list, src_project: ProjectOutput, dst_project: Projec
         src_project,
         'tmp',
         to_copy_tag,
-        tmp_project_labels,
+        tmp_project_label,
         True)["project_id"]
     tmp_project = client.get_project(tmp_project_id)
     check_smartcopy_loop(tmp_project)
     mv_all_sessions(tmp_project, dst_project)
     check_copied_acq_exist(acq_list, dst_project)
-    delete_project(os.path.join('tmp', tmp_project_label))
+    delete_project('tmp', tmp_project_label)
     
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
@@ -426,16 +431,18 @@ def pi_copy(site: str) -> None:
  
         if hdr_list:
             split_session(session, hdr_list)
-
-    group = client.get_group(site)
-    for pi_id, acq_list in copy_dict.items():
-        pi_project = group.projects.find_first(f"label={pi_id}")
-        if not pi_project:
-            new_project_id = client.add_project(body={'group':site, 'label':pi_id})
-            pi_project = client.lookup(os.path.join(site, pi_id))
+    
+    if copy_dict:
+        group = client.get_group(site)
+        for pi_id, acq_list in copy_dict.items():
+            pi_project = group.projects.find_first(f"label={pi_id}")
+            if not pi_project:
+                new_project_id = client.add_project(body={'group':site, 'label':pi_id})
+                pi_project = client.lookup(os.path.join(site, pi_id))
         
-        smarter_copy(acq_list, site_project, pi_project)
-
+            smarter_copy(acq_list, site_project, pi_project)
+    else:
+        log.info("No acquisitions were smart-copied.")
                 
 def redcap_match_mv(
     site: str,
@@ -462,7 +469,7 @@ def redcap_match_mv(
         first_acq = get_first_acq(session)
         if not first_acq:
             continue
-        hdr_fields = get_hdr_fields(session, site)
+        hdr_fields = get_hdr_fields(first_acq, site)
         if hdr_fields["error"]:
             continue
         
@@ -513,7 +520,7 @@ def deid() -> None:
     for session in pre_deid_project.sessions():
         if "deid" not in session.tags:
             # If already deid, tag and ignore
-            sub_label = client.get_subject(session.parents.subject)
+            sub_label = client.get_subject(session.parents.subject).label
             dst_subject = deid_project.subjects.find_first(f'label="{sub_label}"')
             if dst_subject:
                 dst_session = dst_subject.sessions.find_first(f'label="{session.label}"')
@@ -529,7 +536,7 @@ def deid() -> None:
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
-        
+
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = redcap_project.export_records()
