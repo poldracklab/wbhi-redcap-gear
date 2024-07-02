@@ -23,28 +23,10 @@ from flywheel import (
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr
+from wbhiutils.constants import * 
 
 log = logging.getLogger(__name__)
-DATE_FORMAT_FW = "%Y%m%d"
-DATETIME_FORMAT_FW = "%Y%m%d %H%M%S.%f"
-DATE_FORMAT_RC = "%Y-%m-%d"
-REDCAP_API_URL = "https://redcap.stanford.edu/api/"
-WBHI_ID_SUFFIX_LENGTH = 5 # An additional character corresponding to site will be prepended
-SITE_KEY = {
-        "ucsb": "A",
-        "ucb": "B",
-        "ucsf": "C",
-        "uci": "D",
-        "ucd": "E",
-        "stanford": "F"
-    }
-REDCAP_KEY = {
-    "am_pm": {
-        "am": "1",
-        "pm": "2"
-    }
-}
-SITE_LIST = ["ucsb", "uci", "ucb"]
+
 WAIT_TIMEOUT = 3600 * 2
 
 def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
@@ -251,7 +233,7 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
             and record["consent_complete"] == "2"
             and record["site"] == hdr_fields["site"]
             and datetime.strptime(record["mri_date"], DATE_FORMAT_RC) == hdr_fields["date"] 
-            and record["mri_ampm"] == REDCAP_KEY["am_pm"][hdr_fields["am_pm"]]
+            and REDCAP_KEY["am_pm"][record["mri_ampm"]] == hdr_fields["am_pm"]
             and record["mri"].casefold() == hdr_fields["sub_id"]):
             
             mri_pi_field = "mri_pi_" + hdr_fields["site"]
@@ -461,10 +443,10 @@ def redcap_match_mv(
     site_project = client.lookup(f"{site}/Inbound Data")
     sessions = get_sessions_redcap(site_project)
     
+    breakpoint()
     if not sessions:
         log.info(f"No sessions were checked for {site}/Inbound Data.")
         return
-    
     for session in sessions:
         first_acq = get_first_acq(session)
         if not first_acq:
