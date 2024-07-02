@@ -443,7 +443,6 @@ def redcap_match_mv(
     site_project = client.lookup(f"{site}/Inbound Data")
     sessions = get_sessions_redcap(site_project)
     
-    breakpoint()
     if not sessions:
         log.info(f"No sessions were checked for {site}/Inbound Data.")
         return
