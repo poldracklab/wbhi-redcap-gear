@@ -3,7 +3,6 @@
 import time
 import random
 import string
-import re
 import os
 import sys
 import pip
@@ -23,7 +22,20 @@ from flywheel import (
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr
-from wbhiutils.constants import * 
+from wbhiutils.constants import (
+    SITE_LIST,
+    DATETIME_FORMAT_FW,
+    DATE_FORMAT_FW,
+    DATE_FORMAT_RC,
+    SITE_KEY,
+    REDCAP_API_URL,
+    REDCAP_KEY,
+    WBHI_ID_SUFFIX_LENGTH
+)
+
+
+     
+
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +57,7 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     now = datetime.utcnow()
     for session in fw_project.sessions():
         if "skip_redcap" in session.tags:
+            log.info(f'Skipping session {session.label} due to "skip_redcap" tag')
             continue
             
         # Remove timezone info from timestamp
@@ -65,41 +78,49 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
             sessions.append(session)
     return sessions
     
-def get_acq_path(acq: AcquisitionListOutput) -> str:
-    """Takes an acquisition and returns its path: 
-    project/subject/session/acquisition"""
-    project_label = client.get_project(acq.parents.project).label
-    sub_label = client.get_subject(acq.parents.subject).label
-    ses_label = client.get_session(acq.parents.session).label
-    
-    return f"{project_label}/{sub_label}/{ses_label}/{acq.label}"
+def get_acq_or_file_path(container) -> str:
+    """Takes a container and returns its path."""
+    project_label = client.get_project(container.parents.project).label
+    sub_label = client.get_subject(container.parents.subject).label
+    ses_label = client.get_session(container.parents.session).label
+
+    if container.container_type == 'acq':
+        return f"{project_label}/{sub_label}/{ses_label}/{container.label}"
+    elif container.container_type == 'file':
+        acq_label = client.get_acquisition(container.parents.acquisition).label
+        return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}"
 
 def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
     dicom_list = [f for f in acq.files if f.type == "dicom"]
     if not dicom_list:
-        log.warning(f"{get_acq_path(acq)} contains no dicoms.")
+        log.warning(f"{get_acq_or_file_path(acq)} contains no dicoms.")
         return {"error": "NO_DICOMS"}
     dicom = dicom_list[0].reload()
 
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
+        log.error(f"File-classifier gear has not been run on {get_acq_or_file_path(acq)}")
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
     
     dcm_hdr = dicom.info["header"]["dicom"]
-    return {
-        "error": None,
-        "acq": acq,
-        "site": site,
-        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
-        "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
-        "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
-        "series_datetime": datetime.strptime(
-            f"{dcm_hdr['SeriesDate']} {dcm_hdr['SeriesTime']}",
-            DATETIME_FORMAT_FW
-        )
-    }
+
+    try:
+        return {
+            "error": None,
+            "acq": acq,
+            "site": site,
+            "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
+            "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
+            "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
+            "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
+            "series_datetime": datetime.strptime(
+                f"{dcm_hdr['SeriesDate']} {dcm_hdr['SeriesTime']}",
+                DATETIME_FORMAT_FW
+            )
+        }
+    except KeyError:
+        log.error(f"{get_acq_or_file_path(dicom)} is missing necessary field(s).")
+        return {"error": "MISSING_DICOM_FIELDS"}
 
 def split_session(session: SessionListOutput, hdr_list: list) -> None:
     """Checks to see if a sessions is actually a combination of multiple sessions.
@@ -259,7 +280,10 @@ def generate_wbhi_id(matches: list, site: str, id_list: list) -> str:
             
     # Generate ID and make sure it's unique
     while True:
-        wbhi_id_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=WBHI_ID_SUFFIX_LENGTH))
+        wbhi_id_suffix = ''.join(random.choices(
+            string.ascii_uppercase + string.digits,
+            k=WBHI_ID_SUFFIX_LENGTH
+        ))
         wbhi_id = wbhi_id_prefix + wbhi_id_suffix
         if wbhi_id not in id_list:
             id_list.append(wbhi_id)
@@ -309,7 +333,7 @@ def rename_session(session: SessionListOutput) -> None:
     log.info(f"Renamed session {session.label} to {new_session_label}")
 
 def run_gear(
-    gear: flywheel.Gear,
+    gear: Gear,
     inputs: dict,
     config: dict,
     dest,
@@ -419,7 +443,7 @@ def pi_copy(site: str) -> None:
         for pi_id, acq_list in copy_dict.items():
             pi_project = group.projects.find_first(f"label={pi_id}")
             if not pi_project:
-                new_project_id = client.add_project(body={'group':site, 'label':pi_id})
+                client.add_project(body={'group':site, 'label':pi_id})
                 pi_project = client.lookup(os.path.join(site, pi_id))
         
             smarter_copy(acq_list, site_project, pi_project)
@@ -475,7 +499,7 @@ def redcap_match_mv(
                 mv_session(session, pre_deid_project)
             log.info(
                 f"Updated REDCap and Flywheel to include newly generated wbhi-id(s): "
-                "{wbhi_id_session_dict}"
+                f"{wbhi_id_session_dict.keys()}"
             )
         else:
             log.error("Failed to update records on REDCap")
