@@ -119,7 +119,7 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
             )
         }
     except KeyError:
-        log.error(f"{get_acq_or_file_path(dicom)} is missing necessary field(s).")
+        log.warning(f"{get_acq_or_file_path(dicom)} is missing necessary field(s).")
         return {"error": "MISSING_DICOM_FIELDS"}
 
 def split_session(session: SessionListOutput, hdr_list: list) -> None:
@@ -253,6 +253,7 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
         if (record["icf_consent"] == "1"
             and record["consent_complete"] == "2"
             and record["site"] == hdr_fields["site"]
+            and record["site"] in SITE_LIST
             and datetime.strptime(record["mri_date"], DATE_FORMAT_RC) == hdr_fields["date"] 
             and REDCAP_KEY["am_pm"][record["mri_ampm"]] == hdr_fields["am_pm"]
             and record["mri"].casefold() == hdr_fields["sub_id"]):
