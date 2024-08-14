@@ -17,6 +17,7 @@ from flywheel import (
     ProjectOutput,
     SessionListOutput,
     AcquisitionListOutput,
+    SubjectOutput,
     Gear
 )
 
@@ -149,6 +150,28 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
         logging.error(f"Need to split session {session.label}")
         sys.exit(1)
 
+def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
+    """Get unique labels for all acquisitions in the container.
+
+    This is done using a single Data View which is more efficient than iterating through
+    all acquisitions, sessions, and subjects. This prevents time-out errors in large projects.
+    """
+
+    builder = flywheel.ViewBuilder(
+        container='acquisition',
+        filename="*.*",
+        match='all',
+        filter=filter,
+        process_files=False,
+        include_ids=False,
+        include_labels=False
+    )
+    for c in columns:
+        builder.column(src=c)
+   
+    view = builder.build()
+    return client.read_view_dataframe(view, container.id)
+
 def smart_copy(
     src_project: ProjectOutput,
     group_id: str = None,
@@ -228,7 +251,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             acq.add_tag(copied_tag)
 
     if acq_list_failed:
-        acq_labels = [acq.label for acq in acq_list_failed]
+        acq_labels = [(acq.parents.session, acq.label) for acq in acq_list_failed]
         log.error(f"{acq_labels} failed to smart-copy to {pi_project.label}")
         sys.exit(1)
 
@@ -388,7 +411,21 @@ def mv_all_sessions(src_project: ProjectOutput, dst_project: ProjectOutput) -> N
     for session in src_project.sessions():
         if session.acquisitions():
             mv_session(session, dst_project)
-            
+
+def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame()) -> None:
+    """Renames a subject to <sub_label>_<n>, where n is lowest unused integer."""
+    regex = '^' + subject.label + '_\d{3}$'
+    dup_labels = acq_df[acq_df['subject.label'].str.contains(regex, regex=True)]['subject.label']
+   
+    if not dup_labels.empty:
+        dup_ints = dup_labels.str.replace(f"{subject.label}_", "")
+        max_int = pd.to_numeric(dup_ints).max
+        new_suffix = (max_int + 1).zfill(3)
+        new_label = f"{subject.label}_{new_suffix}" 
+    else:
+        new_label = f"{subject.label}_001"
+    
+    subject.update({'label':new_label})
 def smarter_copy(acq_list: list, src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
     """Since smart-copy can't copy to an existing project, this function smart-copies
     all acquisitions from acq_list to a tmp project, waits for it to complete, moves 
@@ -396,10 +433,33 @@ def smarter_copy(acq_list: list, src_project: ProjectOutput, dst_project: Projec
     then deletes the tmp."""
     to_copy_tag = f"to_copy_{dst_project.label}"
     tmp_project_label = f"{dst_project.group}_{dst_project.label}"
+   
+    columns = [
+        'subject.label',
+        'session.label',
+        'session.timestamp'
+    ]
+    dst_df = create_view_df(dst_project, columns)
+    dst_df['session.date'] = dst_df['session.timestamp'].str[:10]
+    sub_label_set = set(dst_df['subject.label'].to_list())
     
     for acq in acq_list:
+        acq = acq.reload()
         if to_copy_tag not in acq.tags:
             acq.add_tag(to_copy_tag)
+
+        # Create a new subject if subject and session already exist in dst_project
+        subject = client.get_subject(acq.parents.subject)
+        if subject.label in sub_label_set:
+            sub_df = dst_df[dst_df['subject.label'] == subject.label]
+            session = client.get_session(acq.parents.session)
+            session_date = session.timestamp.strftime('%Y-%m-%d')
+            if not sub_df[
+                (sub_df['session.label'] == session.label) 
+                & (sub_df['session.date'] != session_date)
+            ].empty:
+                rename_duplicate_subject(subject, dst_df) 
+
             
     tmp_project_id = smart_copy(
         src_project,
