@@ -341,20 +341,7 @@ def tag_session_redcap(session: SessionListOutput) -> None:
     new_redcap_tag = "redcap_" + str(n + 1) + "_" + new_tag_date_str
     session.add_tag(new_redcap_tag)    
 
-def rename_session(session: SessionListOutput) -> None:
-    """Renames session to '01', or the next available number if existing sessions."""
-    sub_sessions = session.subject.sessions()
-    if len(sub_sessions) == 1:
-        new_session_label = '01'
-    else:
-        sub_sessions_sorted = sorted(sub_sessions, key=lambda d: d.timestamp)
-        num_digits = len(str(len(sub_sessions_sorted)))
-        zero_pad = max(num_digits, 2)
-        for i, session in enumerate(sub_sessions_sorted, 1):
-            new_session_label = str(i).zfill(zero_pad)
-            
-    session.update({'label': new_session_label})
-    log.info(f"Renamed session {session.label} to {new_session_label}")
+
 
 def run_gear(
     gear: Gear,
@@ -567,6 +554,42 @@ def redcap_match_mv(
     else:
         log.info("No matches found on REDCap")
 
+def manual_match(csv_path: str, redcap_data: list, redcap_project: Project, id_list: list) -> None:
+    """Manually matches a flywheel session and a redcap record."""
+
+    match_df = pd.read_csv(csv_path, names=('site', 'participant_id', 'sub_label'))
+    pre_deid_project = client.lookup('wbhi/pre-deid')
+
+    for i, row in match_df.iterrows():
+        project = client.lookup(f'{row.site}/Inbound data')
+        subject = project.subjects.find_first(f'label={row.sub_label}')
+        if not subject:
+            log.error(f"Flywheel subject {row.sub_label} was not found.")
+            continue
+        record = next(
+            (item for item in redcap_data if item["participant_id"] == str(row.participant_id)),
+            None
+        )
+        if not record:
+            log.error(f"Redcap record {row.participant_id} was not found.")
+            continue
+
+        wbhi_id = generate_wbhi_id([record], row.site, id_list)
+        record["rid"] = wbhi_id
+        response = redcap_project.import_records([record])
+        if 'error' in response:
+            log.error(f"Redcap record {row.participant_id} failed to update.")
+            continue
+        subject.update({'label': wbhi_id})
+        id_list.append(wbhi_id)
+        sessions = subject.sessions()
+        for session in sessions:
+            tag_session_wbhi(session)
+            mv_session(session, pre_deid_project)
+
+        log.info(f"Updated REDCap and Flywheel to include newly generated wbhi-id: {wbhi_id}")
+    
+
 def deid() -> None:
     """Runs the deid-export gear for any acquisitions in wbhi/pre-deid for which
     it hasn't already been run. Since the gear doesn't wait to check if the 
@@ -607,11 +630,16 @@ def main():
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = redcap_project.export_records()
     id_list = [record["rid"] for record in redcap_data]
-
-    for site in SITE_LIST:
-        pi_copy(site)
-        redcap_match_mv(site, redcap_data, redcap_project, id_list)
+    
+    match_csv = gtk_context.get_input_path("match_csv")
+    if match_csv:
+        manual_match(match_csv, redcap_data, redcap_project, id_list)
         deid()
+    else:
+        for site in SITE_LIST:
+            pi_copy(site)
+            redcap_match_mv(site, redcap_data, redcap_project, id_list)
+            deid()
         
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:

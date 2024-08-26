@@ -29,6 +29,16 @@
 	"inputs": {
 		"key": {
 			"base": "api-key"
+		},
+		"match_csv": {
+			"description": "A csv file to manually match redcap records to flywheel subject. If included, will skip automatic matching and pi-copy. Should contain no header and three columns: 1) site, 2) redcap rid, 3) subject label",
+			"base": "file",
+			"type": {
+				"enum": [
+					"text"
+				]
+			},
+			"optional": true
 		}
 	},
 	"config": {
