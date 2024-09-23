@@ -57,8 +57,8 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     today = datetime.today()
     now = datetime.utcnow()
     for session in fw_project.sessions():
-        if "skip_redcap" in session.tags:
-            log.info(f'Skipping session {session.label} due to "skip_redcap" tag')
+        if "skip_redcap" in session.tags or "need_to_split" in session.tags:
+            log.info(f'Skipping session {session.label} due to tag')
             continue
             
         # Remove timezone info from timestamp
@@ -147,8 +147,9 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
         need_to_split = True
     
     if need_to_split:
+        if 'need_to_split' not in session.tags:
+            session.add_tag('need_to_split')
         logging.error(f"Need to split session {session.label}")
-        sys.exit(1)
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
@@ -357,7 +358,7 @@ def run_gear(
         log.debug('Submitted job %s', gear_job_id)
         return gear_job_id
     except flywheel.rest.ApiException:
-        log.exception('An exception was raised when attempting to submit a job for %s', gear.name)
+        log.exception('An exception was raised when attempting to submit a job for %s', gear.gear.name)
 
 def delete_project(group_id: str, project_label) -> None:
     """Deletes a project."""
@@ -406,8 +407,8 @@ def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame()) -> 
    
     if not dup_labels.empty:
         dup_ints = dup_labels.str.replace(f"{subject.label}_", "")
-        max_int = pd.to_numeric(dup_ints).max
-        new_suffix = (max_int + 1).zfill(3)
+        max_int = pd.to_numeric(dup_ints).max()
+        new_suffix = str(max_int + 1).zfill(3)
         new_label = f"{subject.label}_{new_suffix}" 
     else:
         new_label = f"{subject.label}_001"
@@ -427,8 +428,12 @@ def smarter_copy(acq_list: list, src_project: ProjectOutput, dst_project: Projec
         'session.timestamp'
     ]
     dst_df = create_view_df(dst_project, columns)
-    dst_df['session.date'] = dst_df['session.timestamp'].str[:10]
-    sub_label_set = set(dst_df['subject.label'].to_list())
+
+    if not dst_df.empty:
+        dst_df['session.date'] = dst_df['session.timestamp'].str[:10]
+        sub_label_set = set(dst_df['subject.label'].to_list())
+    else:
+        sub_label_set = set()
     
     for acq in acq_list:
         acq = acq.reload()
@@ -493,7 +498,6 @@ def pi_copy(site: str) -> None:
             if not pi_project:
                 client.add_project(body={'group':site, 'label':pi_id})
                 pi_project = client.lookup(os.path.join(site, pi_id))
-        
             smarter_copy(acq_list, site_project, pi_project)
     else:
         log.info("No acquisitions were smart-copied.")
@@ -603,8 +607,8 @@ def deid() -> None:
     inputs = {'deid_profile': deid_template}
     config = {
         'project_path': 'wbhi/deid', 
-        'overwrite_files': False,
-        'debug': False
+        'overwrite_files': 'Skip',
+        'debug': False,
     } 
     for session in pre_deid_project.sessions():
         if "deid" not in session.tags:
@@ -640,7 +644,9 @@ def main():
             pi_copy(site)
             redcap_match_mv(site, redcap_data, redcap_project, id_list)
             deid()
-        
+    
+    log.info("Gear complete. Exiting.")
+
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
         config = gtk_context.config
