@@ -22,8 +22,8 @@ from flywheel import (
 )
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
-from wbhiutils import parse_dicom_hdr
-from wbhiutils.constants import (
+from wbhiutils import parse_dicom_hdr # noqa: E402
+from wbhiutils.constants import ( # noqa: E402
     SITE_LIST,
     DATETIME_FORMAT_FW,
     DATE_FORMAT_FW,
@@ -238,8 +238,8 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
     
     for acq in acq_list:
         session_set.add(acq.parents.session)
-        sub_label = client.get_subject(acq.parents.subject).label
-        ses_label = client.get_session(acq.parents.session).label
+        sub_label = client.get_subject(acq.parents.subject).label.replace(',', '\,')
+        ses_label = client.get_session(acq.parents.session).label.replace(',', '\,')
         dst_subject = pi_project.subjects.find_first(f'label="{sub_label}"')
         if not dst_subject:
             acq_list_failed.append(acq)
@@ -375,7 +375,7 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
         session.update(project=dst_project.id)
     except flywheel.ApiException as exc:
         if exc.status == 422:
-            sub_label = client.get_subject(session.parents.subject).label
+            sub_label = client.get_subject(session.parents.subject).label.replace(',', '\,')
             subject_dst_id = dst_project.subjects.find_first(f'label="{sub_label}"').id
             body = {
                 "sources": [session.id],
@@ -488,7 +488,7 @@ def pi_copy(site: str) -> None:
             if f"copied_{pi_id}" not in acq.tags:
                 copy_dict[pi_id].append(acq)
  
-        if hdr_list:
+        if hdr_list and 'skip_split' not in session.tags:
             split_session(session, hdr_list)
     
     if copy_dict:
@@ -562,6 +562,7 @@ def manual_match(csv_path: str, redcap_data: list, redcap_project: Project, id_l
     """Manually matches a flywheel session and a redcap record."""
 
     match_df = pd.read_csv(csv_path, names=('site', 'participant_id', 'sub_label'))
+    match_df['sub_label'] = match_df['sub_label'].str.replace(',', '\,')
     pre_deid_project = client.lookup('wbhi/pre-deid')
 
     for i, row in match_df.iterrows():
@@ -613,10 +614,11 @@ def deid() -> None:
     for session in pre_deid_project.sessions():
         if "deid" not in session.tags:
             # If already deid, tag and ignore
-            sub_label = client.get_subject(session.parents.subject).label
+            sub_label = client.get_subject(session.parents.subject).label.replace(',', '\,')
             dst_subject = deid_project.subjects.find_first(f'label="{sub_label}"')
             if dst_subject:
-                dst_session = dst_subject.sessions.find_first(f'label="{session.label}"')
+                session_label = session.label.replace(',', '\,')
+                dst_session = dst_subject.sessions.find_first(f'label="{session_label}"')
                 if dst_session:
                     src_acq_set = set([acq.label for acq in session.acquisitions()])
                     dst_acq_set = set([acq.label for acq in dst_session.acquisitions()])
@@ -634,7 +636,7 @@ def main():
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = redcap_project.export_records()
     id_list = [record["rid"] for record in redcap_data]
-    
+
     match_csv = gtk_context.get_input_path("match_csv")
     if match_csv:
         manual_match(match_csv, redcap_data, redcap_project, id_list)
