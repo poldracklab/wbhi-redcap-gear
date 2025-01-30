@@ -20,7 +20,7 @@
 	"custom": {
 		"gear-builder": {
 			"category": "analysis",
-			"image": "jbwexler/wbhi-redcap:1.0.5"
+			"image": "poldracklab/wbhi-redcap:1.0.5"
 		},
 		"flywheel": {
 			"suite": "WBHI"
