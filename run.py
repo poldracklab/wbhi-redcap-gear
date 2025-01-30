@@ -181,7 +181,7 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
 
 def smart_copy(
     src_project: ProjectOutput,
-    group_id: str | None = None,
+    group_id: str,
     tag: str | None = None,
     dst_project_label: str | None = None,
     delete_existing_project=False,
@@ -424,7 +424,7 @@ def mv_all_sessions(src_project: ProjectOutput, dst_project: ProjectOutput) -> N
             mv_session(session, dst_project)
 
 
-def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame()) -> None:
+def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame) -> None:
     """Renames a subject to <sub_label>_<n>, where n is lowest unused integer."""
     regex = rf'^{subject.label}_\d{{3}}$'
     dup_labels = acq_df[acq_df['subject.label'].str.contains(regex, regex=True)][
