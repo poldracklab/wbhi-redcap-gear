@@ -109,22 +109,43 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
 
     dcm_hdr = dicom.info['header']['dicom']
 
+    meta = {'error': None, 'acq': acq, 'site': site}
+    error = {'error': 'MISSING_DICOM_FIELDS'}
+    dcm = get_acq_or_file_path(dicom)
+
     try:
-        return {
-            'error': None,
-            'acq': acq,
-            'site': site,
-            'pi_id': parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-            'sub_id': parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
-            'date': datetime.strptime(dcm_hdr['StudyDate'], DATE_FORMAT_FW),
-            'am_pm': 'am' if float(dcm_hdr['StudyTime']) < 120000 else 'pm',
-            'series_datetime': datetime.strptime(
-                f'{dcm_hdr["SeriesDate"]} {dcm_hdr["SeriesTime"]}', DATETIME_FORMAT_FW
-            ),
-        }
+        meta['pi_id'] = parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold()
     except KeyError:
-        log.warning(f'{get_acq_or_file_path(dicom)} is missing necessary field(s).')
-        return {'error': 'MISSING_DICOM_FIELDS'}
+        log.warning(f'{dcm} problem fetching PI ID')
+        return error
+
+    try:
+        meta['sub_id'] = parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+    except KeyError:
+        log.warning(f'{dcm} problem fetching SUB ID')
+        return error
+
+    try:
+        meta['date'] = datetime.strptime(dcm_hdr['StudyDate'], DATE_FORMAT_FW)
+    except KeyError:
+        log.warning(f'{dcm} problem fetching DATE')
+        return error
+
+    try:
+        meta['am_pm'] = 'am' if float(dcm_hdr['StudyTime']) < 120000 else 'pm'
+    except KeyError:
+        log.warning(f'{dcm} problem fetching AM/PM')
+        return error
+
+    try:
+        meta['series_datetime'] = datetime.strptime(
+            f'{dcm_hdr["SeriesDate"]} {dcm_hdr["SeriesTime"]}', DATETIME_FORMAT_FW
+        )
+    except KeyError:
+        log.warning(f'{dcm} problem fetching SERIES DATETIME')
+        return error
+
+    return meta
 
 
 def split_session(session: SessionListOutput, hdr_list: list) -> None:
@@ -205,7 +226,7 @@ def smart_copy(
 
     log.info(
         f'Smart-copying acquisition labeled "{tag}" from "{src_project.label}" '
-        'to "{group_id}/{dst_project_label}'
+        f'to "{group_id}/{dst_project_label}'
     )
 
     return client.project_copy(src_project.id, data)
@@ -243,6 +264,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
 
     to_copy_tag = 'to_copy_' + pi_project.label
     copied_tag = 'copied_' + pi_project.label
+    log.info(f'Checking copied acquisitions in {pi_project.label}')
 
     for acq in acq_list:
         session_set.add(acq.parents.session)
@@ -398,7 +420,7 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
             sub_label = client.get_subject(session.parents.subject).label.replace(
                 ',', r'\,'
             )
-            subject_dst_id = dst_project.subjects.find_first(f'label="{sub_label}"').idr
+            subject_dst_id = dst_project.subjects.find_first(f'label="{sub_label}"').id
             body = {
                 'sources': [session.id],
                 'destinations': [subject_dst_id],
@@ -409,7 +431,7 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
         else:
             log.exception(
                 f'Error moving subject {session.subject.label}/{session.label}'
-                'from {src_project.label} to {dst_project.label}'
+                f'from {session.id} to {dst_project.label}'
             )
 
 
@@ -417,11 +439,12 @@ def mv_all_sessions(src_project: ProjectOutput, dst_project: ProjectOutput) -> N
     """Moves all non-empty sessions from one project to another"""
     log.info(
         f'Moving all non-empty sessions from {src_project.group}/{src_project.label} to '
-        '{dst_project.group}/{dst_project.label}'
+        f'{dst_project.group}/{dst_project.label}'
     )
     for session in src_project.sessions():
         if session.acquisitions():
             mv_session(session, dst_project)
+    log.info('All sessions moved.')
 
 
 def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame) -> None:
@@ -480,11 +503,13 @@ def smarter_copy(
                 (sub_df['session.label'] == session.label)
                 & (sub_df['session.date'] != session_date)
             ].empty:
+                old_label = subject.label
                 rename_duplicate_subject(subject, dst_df)
+                log.info('Renamed subject %s to %s', old_label, subject.label)
 
     tmp_project_id = smart_copy(
         src_project,
-        'tmp',
+        'tmp2',
         to_copy_tag,
         tmp_project_label,
         True,
@@ -493,7 +518,7 @@ def smarter_copy(
     check_smartcopy_loop(tmp_project)
     mv_all_sessions(tmp_project, dst_project)
     check_copied_acq_exist(acq_list, dst_project)
-    delete_project('tmp', tmp_project_label)
+    delete_project('tmp2', tmp_project_label)
 
 
 def pi_copy(site: str) -> None:
@@ -648,7 +673,7 @@ def deid() -> None:
     config = {
         'project_path': 'wbhi/deid',
         'overwrite_files': 'Skip',
-        'debug': False,
+        'debug': True,
     }
     for session in pre_deid_project.sessions():
         if 'deid' not in session.tags:
@@ -667,8 +692,10 @@ def deid() -> None:
                     dst_acq_set = set([acq.label for acq in dst_session.acquisitions()])
                     if src_acq_set == dst_acq_set:
                         session.add_tag('deid')
+                        log.info('Skipping deid gear for %s', sub_label)
                         continue
             # Otherwise, run deid gear
+            log.info(f'Submitting deid gear for {sub_label}')
             run_gear(deid_gear, inputs, config, session)
 
 
