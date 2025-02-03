@@ -57,7 +57,7 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     now = datetime.utcnow()
     for session in fw_project.sessions():
         if 'skip_redcap' in session.tags or 'need_to_split' in session.tags:
-            log.info(f'Skipping session {session.label} due to tag')
+            log.info('Skipping session %s due to tag', session.label)
             continue
 
         # Remove timezone info from timestamp
@@ -70,7 +70,7 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
             sessions.append(session)
             continue
         elif len(redcap_tags) > 1:
-            log.warning(f'{session.label} has multiple redcap tags: {redcap_tags}')
+            log.warning('%s has multiple redcap tags: %s', session.label, redcap_tags)
             redcap_tags = [sorted(redcap_tags)[-1]]
         tag_date_str = redcap_tags[0].split('_')[-1]
         tag_date = datetime.strptime(tag_date_str, DATE_FORMAT_FW)
@@ -97,13 +97,13 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
     dicom_list = [f for f in acq.files if f.type == 'dicom']
     if not dicom_list:
-        log.warning(f'{get_acq_or_file_path(acq)} contains no dicoms.')
+        log.warning('%s contains no dicoms.', get_acq_or_file_path(acq))
         return {'error': 'NO_DICOMS'}
     dicom = dicom_list[0].reload()
 
     if 'file-classifier' not in dicom.tags or 'header' not in dicom.info:
         log.error(
-            f'File-classifier gear has not been run on {get_acq_or_file_path(acq)}'
+            'File-classifier gear has not been run on %s', get_acq_or_file_path(acq)
         )
         return {'error': 'FILE_CLASSIFIER_NOT_RUN'}
 
@@ -116,25 +116,25 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     try:
         meta['pi_id'] = parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold()
     except KeyError:
-        log.warning(f'{dcm} problem fetching PI ID')
+        log.warning('%s problem fetching PI ID', dcm)
         return error
 
     try:
         meta['sub_id'] = parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
     except KeyError:
-        log.warning(f'{dcm} problem fetching SUB ID')
+        log.warning('%s problem fetching SUB ID', dcm)
         return error
 
     try:
         meta['date'] = datetime.strptime(dcm_hdr['StudyDate'], DATE_FORMAT_FW)
     except KeyError:
-        log.warning(f'{dcm} problem fetching DATE')
+        log.warning('%s problem fetching DATE', dcm)
         return error
 
     try:
         meta['am_pm'] = 'am' if float(dcm_hdr['StudyTime']) < 120000 else 'pm'
     except KeyError:
-        log.warning(f'{dcm} problem fetching AM/PM')
+        log.warning('%s problem fetching AM/PM', dcm)
         return error
 
     try:
@@ -142,7 +142,7 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
             f'{dcm_hdr["SeriesDate"]} {dcm_hdr["SeriesTime"]}', DATETIME_FORMAT_FW
         )
     except KeyError:
-        log.warning(f'{dcm} problem fetching SERIES DATETIME')
+        log.warning('%s problem fetching SERIES DATETIME', dcm)
         return error
 
     return meta
@@ -174,7 +174,7 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
     if need_to_split:
         if 'need_to_split' not in session.tags:
             session.add_tag('need_to_split')
-        logging.error(f'Need to split session {session.label}')
+        logging.error('Need to split session %s', session.label)
 
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
@@ -225,8 +225,10 @@ def smart_copy(
     }
 
     log.info(
-        f'Smart-copying acquisition labeled "{tag}" from "{src_project.label}" '
-        f'to "{group_id}/{dst_project_label}'
+        'Smart-copying acquisition labeled "%s" from "%s" to "%s"',
+        tag,
+        src_project.label,
+        f'{group_id}/{dst_project_label}',
     )
 
     return client.project_copy(src_project.id, data)
@@ -249,7 +251,7 @@ def check_smartcopy_loop(dst_project: ProjectOutput) -> None:
     start_time = time.time()
     while True:
         if check_smartcopy_job_complete(dst_project):
-            log.info(f'Copy project to {dst_project.id} complete')
+            log.info('Copy project to %s complete', dst_project.id)
             return
         if time.time() - start_time > WAIT_TIMEOUT:
             log.error('Wait timeout for copy to complete')
@@ -264,7 +266,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
 
     to_copy_tag = 'to_copy_' + pi_project.label
     copied_tag = 'copied_' + pi_project.label
-    log.info(f'Checking copied acquisitions in {pi_project.label}')
+    log.info('Checking copied acquisitions in %s', pi_project.label)
 
     for acq in acq_list:
         session_set.add(acq.parents.session)
@@ -285,7 +287,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
 
     if acq_list_failed:
         acq_labels = [(acq.parents.session, acq.label) for acq in acq_list_failed]
-        log.error(f'{acq_labels} failed to smart-copy to {pi_project.label}')
+        log.error('%s failed to smart-copy to %s', acq_labels, pi_project.label)
         sys.exit(1)
 
     # Tag session if all acqs are tagged to save time when filtering sessions in future runs
@@ -408,7 +410,7 @@ def delete_project(group_id: str, project_label) -> None:
         project = group.projects.find_first(f'label={project_label}')
         if project:
             client.delete_project(project.id)
-            log.info(f'Deleted project {group_id}/{project_label}')
+            log.info('Deleted project %s', f'{group_id}/{project_label}')
 
 
 def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
@@ -430,16 +432,19 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
             client.bulk_move_sessions(body=body)
         else:
             log.exception(
-                f'Error moving subject {session.subject.label}/{session.label}'
-                f'from {session.id} to {dst_project.label}'
+                'Error moving subject %s from %s to %s',
+                f'{session.subject.label}/{session.label}',
+                session.id,
+                dst_project.label,
             )
 
 
 def mv_all_sessions(src_project: ProjectOutput, dst_project: ProjectOutput) -> None:
     """Moves all non-empty sessions from one project to another"""
     log.info(
-        f'Moving all non-empty sessions from {src_project.group}/{src_project.label} to '
-        f'{dst_project.group}/{dst_project.label}'
+        'Moving all non-empty sessions from %s to %s',
+        f'{src_project.group}/{src_project.label}',
+        f'{dst_project.group}/{dst_project.label}',
     )
     for session in src_project.sessions():
         if session.acquisitions():
@@ -525,7 +530,7 @@ def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
     to project named after pi-id."""
-    log.info(f'Checking {site} acquisitions to smart-copy.')
+    log.info('Checking %s acquisitions to smart-copy.', site)
     site_project = client.lookup(f'{site}/Inbound Data')
     sessions = get_sessions_pi_copy(site_project)
     copy_dict = defaultdict(list)
@@ -566,7 +571,7 @@ def redcap_match_mv(
     Pulls relevant fields from dicom and checks for matches with redcap records. If matches,
     generate unique WBHI-ID and assign to flywheel subject and matching records (or pull from
     redcap if WBHI-ID already exists.) Finally, move matching subjects to wbhi/pre-deid project."""
-    log.info(f'Checking {site} for matches with redcap.')
+    log.info('Checking %s for matches with redcap.', site)
     new_records = []
     wbhi_id_session_dict = {}
 
@@ -575,7 +580,7 @@ def redcap_match_mv(
     sessions = get_sessions_redcap(site_project)
 
     if not sessions:
-        log.info(f'No sessions were checked for {site}/Inbound Data.')
+        log.info('No sessions were checked for %s', f'{site}/Inbound Data.')
         return
     for session in sessions:
         first_acq = get_first_acq(session)
@@ -605,8 +610,8 @@ def redcap_match_mv(
                 subject.update({'label': wbhi_id})
                 mv_session(session, pre_deid_project)
             log.info(
-                f'Updated REDCap and Flywheel to include newly generated wbhi-id(s): '
-                f'{wbhi_id_session_dict.keys()}'
+                'Updated REDCap and Flywheel to include newly generated wbhi-id(s): %s',
+                wbhi_id_session_dict.keys(),
             )
         else:
             log.error('Failed to update records on REDCap')
@@ -627,7 +632,7 @@ def manual_match(
         project = client.lookup(f'{row.site}/Inbound data')
         subject = project.subjects.find_first(f'label={row.sub_label}')
         if not subject:
-            log.error(f'Flywheel subject {row.sub_label} was not found.')
+            log.error('Flywheel subject %s was not found.', row.sub_label)
             continue
         record = next(
             (
@@ -638,14 +643,14 @@ def manual_match(
             None,
         )
         if not record:
-            log.error(f'Redcap record {row.participant_id} was not found.')
+            log.error('Redcap record %s was not found.', row.participant_id)
             continue
 
         wbhi_id = generate_wbhi_id([record], row.site, id_list)
         record['rid'] = wbhi_id
         response = redcap_project.import_records([record])
         if 'error' in response:
-            log.error(f'Redcap record {row.participant_id} failed to update.')
+            log.error('Redcap record %s failed to update.', row.participant_id)
             continue
         subject.update({'label': wbhi_id})
         id_list.append(wbhi_id)
@@ -655,7 +660,7 @@ def manual_match(
             mv_session(session, pre_deid_project)
 
         log.info(
-            f'Updated REDCap and Flywheel to include newly generated wbhi-id: {wbhi_id}'
+            'Updated REDCap and Flywheel to include newly generated wbhi-id: %s', wbhi_id
         )
 
 
@@ -695,7 +700,7 @@ def deid() -> None:
                         log.info('Skipping deid gear for %s', sub_label)
                         continue
             # Otherwise, run deid gear
-            log.info(f'Submitting deid gear for {sub_label}')
+            log.info('Submitting deid gear for %s', sub_label)
             run_gear(deid_gear, inputs, config, session)
 
 
