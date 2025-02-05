@@ -85,7 +85,7 @@ def get_acq_or_file_path(container) -> str:
     sub_label = client.get_subject(container.parents.subject).label
     ses_label = client.get_session(container.parents.session).label
 
-    if container.container_type == 'acq':
+    if container.container_type in ('acq', 'acquisition'):
         return f'{project_label}/{sub_label}/{ses_label}/{container.label}'
     elif container.container_type == 'file':
         acq_label = client.get_acquisition(container.parents.acquisition).label
@@ -538,7 +538,11 @@ def pi_copy(site: str) -> None:
     for session in sessions:
         hdr_list = []
         for acq in session.acquisitions():
-            acq_hdr_fields = get_hdr_fields(acq, site)
+            try:
+                acq_hdr_fields = get_hdr_fields(acq, site)
+            except ValueError as e:
+                msg = f'Bad acquisition; site {site}, session {session}, acq {acq}'
+                raise ValueError(msg) from e
             if acq_hdr_fields['error']:
                 continue
             hdr_list.append(acq_hdr_fields)
