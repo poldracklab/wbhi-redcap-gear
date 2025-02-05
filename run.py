@@ -543,8 +543,9 @@ def pi_copy(site: str) -> None:
             try:
                 acq_hdr_fields = get_hdr_fields(acq, site)
             except ValueError as e:
-                msg = f'Bad acquisition; site {site}, session {session}, acq {acq}'
-                raise ValueError(msg) from e
+                log.error(f'Bad acquisition; site {site}, session {session}, acq {acq}')
+                log.error(f'Error: {e}')
+                break
             if acq_hdr_fields['error']:
                 log.info('Skipping remaining acquisitions in session')
                 break
@@ -723,12 +724,17 @@ def main():
     match_csv = gtk_context.get_input_path('match_csv')
     if match_csv:
         manual_match(match_csv, redcap_data, redcap_project, id_list)
-        deid()
     else:
         for site in SITE_LIST:
-            pi_copy(site)
-            redcap_match_mv(site, redcap_data, redcap_project, id_list)
-            deid()
+            try:
+                pi_copy(site)
+            except Exception as e:
+                log.error('Error in pi_copy for %s: %s', site, e)
+            try:
+                redcap_match_mv(site, redcap_data, redcap_project, id_list)
+            except Exception as e:
+                log.error('Error in redcap_match_mv for %s: %s', site, e)
+    deid()
 
     log.info('Gear complete. Exiting.')
 
