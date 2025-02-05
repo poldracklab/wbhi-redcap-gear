@@ -545,10 +545,10 @@ def pi_copy(site: str) -> None:
             except ValueError as e:
                 log.error(f'Bad acquisition; site {site}, session {session}, acq {acq}')
                 log.error(f'Error: {e}')
-                break
+                continue
             if acq_hdr_fields['error']:
-                log.info('Skipping remaining acquisitions in session')
-                break
+                # log.info('Skipping remaining acquisitions in session')
+                continue
             hdr_list.append(acq_hdr_fields)
             if acq_hdr_fields['pi_id'].isalnum():
                 pi_id = acq_hdr_fields['pi_id']
