@@ -95,11 +95,13 @@ def get_acq_or_file_path(container) -> str:
 
 def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
-    dicom_list = [f for f in acq.files if f.type == 'dicom']
-    if not dicom_list:
+    try:
+        dicom = next(f for f in acq.files if f.type == 'dicom')
+    except StopIteration:
         log.warning('%s contains no dicoms.', get_acq_or_file_path(acq))
         return {'error': 'NO_DICOMS'}
-    dicom = dicom_list[0].reload()
+    # XXX: Joe, why are we reloading?
+    dicom = dicom.reload()
 
     if 'file-classifier' not in dicom.tags or 'header' not in dicom.info:
         log.error(
@@ -544,7 +546,8 @@ def pi_copy(site: str) -> None:
                 msg = f'Bad acquisition; site {site}, session {session}, acq {acq}'
                 raise ValueError(msg) from e
             if acq_hdr_fields['error']:
-                continue
+                log.info('Skipping remaining acquisitions in session')
+                break
             hdr_list.append(acq_hdr_fields)
             if acq_hdr_fields['pi_id'].isalnum():
                 pi_id = acq_hdr_fields['pi_id']
