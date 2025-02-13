@@ -7,7 +7,7 @@
 	"maintainer": "Joe Wexler",
 	"cite": "",
 	"license": "MIT",
-	"url": "",
+	"url": "https://github.com/poldracklab/wbhi-redcap-gear",
 	"source": "",
 	"environment": {
 		"FLYWHEEL": "/flywheel/v0",
