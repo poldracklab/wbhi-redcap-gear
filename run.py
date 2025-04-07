@@ -102,7 +102,7 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     except StopIteration:
         log.warning('%s contains no dicoms.', get_acq_or_file_path(acq))
         return {'error': 'NO_DICOMS'}
-    # XXX: Joe, why are we reloading?
+    # Reload the dicom file to ensure dicom header is loaded
     dicom = dicom.reload()
 
     if 'file-classifier' not in dicom.tags or 'header' not in dicom.info:
@@ -325,6 +325,7 @@ def get_first_acq(session: SessionListOutput) -> AcquisitionListOutput | None:
 
 def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
     """Finds redcap records that match relevant header fields of a dicom."""
+
     hdr_keys = {'site', 'date', 'am_pm', 'sub_id', 'pi_id'}
     if (missing_hdr := hdr_keys - set(hdr_fields.keys())):
         log.warning('Headers missing required key(s): %s', missing_hdr)
@@ -334,12 +335,13 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
         'icf_consent',
         'consent_complete',
         'site',
-        'mri_data',
+        'mri_date',
         'mri_ampm',
         'mri',
         mri_pi_field,
     }
     matches = []
+    
     # Start with most recent records
     for record in reversed(redcap_data):
         if (missing_redcap := redcap_keys - set(record.keys())):
@@ -640,7 +642,7 @@ def redcap_match_mv(
         first_acq = get_first_acq(session)
         if not first_acq:
             continue
-
+        
         try:
             hdr_fields = get_hdr_fields(first_acq, site)
         except ValueError as e:
