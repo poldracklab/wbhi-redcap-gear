@@ -300,7 +300,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             except Exception:
                 breakpoint()
             # flywheel.rest.ApiException: (409) Reason: Tag already exists
-            # tmp2/ucsd_qa to ucsd/qa
+            # tmp/ucsd_qa to ucsd/qa
 
     if acq_list_failed:
         acq_labels = [(acq.parents.session, acq.label) for acq in acq_list_failed]
@@ -325,7 +325,7 @@ def get_first_acq(session: SessionListOutput) -> AcquisitionListOutput | None:
 
 def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
     """Finds redcap records that match relevant header fields of a dicom."""
-
+    
     hdr_keys = {'site', 'date', 'am_pm', 'sub_id', 'pi_id'}
     if (missing_hdr := hdr_keys - set(hdr_fields.keys())):
         log.warning('Headers missing required key(s): %s', missing_hdr)
@@ -395,13 +395,15 @@ def generate_wbhi_id(matches: list, site: str, id_list: list) -> str:
 def tag_session_wbhi(session: SessionListOutput) -> None:
     """Tags a session with 'wbhi' and removes any redcap tags"""
     redcap_tags = [tag for tag in session.tags if tag.startswith('redcap')]
-    session.add_tag('wbhi')
+    if 'wbhi' not in session.tags:
+        session.add_tag('wbhi')
     if redcap_tags:
         for tag in redcap_tags:
             session.delete_tag(tag)
     for acq in session.acquisitions():
         for f in acq.files:
-            f.add_tag('wbhi')
+            if 'wbhi' not in f.tags:
+                f.add_tag('wbhi')
 
 
 def tag_session_redcap(session: SessionListOutput) -> None:
@@ -551,7 +553,7 @@ def smarter_copy(
 
     tmp_project_id = smart_copy(
         src_project,
-        'tmp2',
+        'tmp',
         to_copy_tag,
         tmp_project_label,
         True,
@@ -560,13 +562,14 @@ def smarter_copy(
     check_smartcopy_loop(tmp_project)
     mv_all_sessions(tmp_project, dst_project)
     check_copied_acq_exist(acq_list, dst_project)
-    delete_project('tmp2', tmp_project_label)
+    delete_project('tmp', tmp_project_label)
 
 
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
-    to project named after pi-id."""
+    to project named after pi-id. If 'manual_copy_<PI_ID>' tag exists for a
+    session, this PI_ID gets used instead of pulling from dicom header."""
     log.info('Checking "%s/Inbound Data" sessions to smart-copy.', site)
     site_project = client.lookup(f'{site}/Inbound Data')
     sessions = get_sessions_pi_copy(site_project)
@@ -576,19 +579,26 @@ def pi_copy(site: str) -> None:
 
     for session in sessions:
         hdr_list = []
+        manual_pi_id = [
+            t.split('manual_copy_')[1] for t in session.tags if t.startswith('manual_copy_')
+        ] 
+
         for acq in session.acquisitions():
-            try:
-                acq_hdr_fields = get_hdr_fields(acq, site)
-            except ValueError as e:
-                log.debug(f'Problem with DICOM header: {e}')
-                continue
-            if acq_hdr_fields['error']:
-                continue
-            hdr_list.append(acq_hdr_fields)
-            if acq_hdr_fields['pi_id'].isalnum():
-                pi_id = acq_hdr_fields['pi_id']
+            if manual_pi_id:
+                pi_id = manual_pi_id[0]
             else:
-                pi_id = 'other'
+                try:
+                    acq_hdr_fields = get_hdr_fields(acq, site)
+                except ValueError as e:
+                    log.debug(f'Problem with DICOM header: {e}')
+                    continue
+                if acq_hdr_fields['error']:
+                    continue
+                hdr_list.append(acq_hdr_fields)
+                if acq_hdr_fields['pi_id'].isalnum():
+                    pi_id = acq_hdr_fields['pi_id']
+                else:
+                    pi_id = 'other'
             if f'copied_{pi_id}' not in acq.tags:
                 copy_dict[pi_id].append(acq)
 
@@ -775,7 +785,6 @@ def requires_deid(session: SessionListOutput, deid_project: ProjectOutput) -> bo
     session.add_tag('deid')
     log.info('Tagging and skipping deid gear for %s', sub_label)
     return False
-
 
 def main():
     gtk_context.init_logging()
