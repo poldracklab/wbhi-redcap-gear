@@ -102,7 +102,7 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
     except StopIteration:
         log.warning('%s contains no dicoms.', get_acq_or_file_path(acq))
         return {'error': 'NO_DICOMS'}
-    # XXX: Joe, why are we reloading?
+    # Reload the dicom file to ensure dicom header is loaded
     dicom = dicom.reload()
 
     if 'file-classifier' not in dicom.tags or 'header' not in dicom.info:
@@ -172,7 +172,8 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
     threshold = pd.Timedelta(hours=4)
     if time_diff.max() > threshold:
         log.info(
-            'Difference between acquisitions > 4 hours, splitting session %s', session.label
+            'Difference between acquisitions > 4 hours, splitting session %s',
+            session.label,
         )
         need_to_split = True
 
@@ -287,11 +288,18 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             continue
         dst_session = dst_subject.sessions.find_first(f'label="{ses_label}"')
         if not dst_session:
-            log.error('Session %s not found in %s sessions', ses_label, dst_subject.sessions)
+            log.error(
+                'Session %s not found in %s sessions', ses_label, dst_subject.sessions
+            )
             acq_list_failed.append(acq)
             continue
         elif not dst_session.acquisitions.find_first(f'copy_of={acq.id}'):
-            log.error('No copy of %s (label=%s) found in %s', acq.id, acq.label, dst_session.label)
+            log.error(
+                'No copy of %s (label=%s) found in %s',
+                acq.id,
+                acq.label,
+                dst_session.label,
+            )
             acq_list_failed.append(acq)
         else:
             try:
@@ -300,7 +308,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             except Exception:
                 breakpoint()
             # flywheel.rest.ApiException: (409) Reason: Tag already exists
-            # tmp2/ucsd_qa to ucsd/qa
+            # tmp/ucsd_qa to ucsd/qa
 
     if acq_list_failed:
         acq_labels = [(acq.parents.session, acq.label) for acq in acq_list_failed]
@@ -325,8 +333,9 @@ def get_first_acq(session: SessionListOutput) -> AcquisitionListOutput | None:
 
 def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
     """Finds redcap records that match relevant header fields of a dicom."""
+
     hdr_keys = {'site', 'date', 'am_pm', 'sub_id', 'pi_id'}
-    if (missing_hdr := hdr_keys - set(hdr_fields.keys())):
+    if missing_hdr := hdr_keys - set(hdr_fields.keys()):
         log.warning('Headers missing required key(s): %s', missing_hdr)
     # if not all(x for x in hdr_fields.keys())
     mri_pi_field = f'mri_pi_{hdr_fields["site"]}'
@@ -334,15 +343,16 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
         'icf_consent',
         'consent_complete',
         'site',
-        'mri_data',
+        'mri_date',
         'mri_ampm',
         'mri',
         mri_pi_field,
     }
     matches = []
+
     # Start with most recent records
     for record in reversed(redcap_data):
-        if (missing_redcap := redcap_keys - set(record.keys())):
+        if missing_redcap := redcap_keys - set(record.keys()):
             log.debug('REDCap record missing required key(s): %s', missing_redcap)
             continue
 
@@ -351,11 +361,11 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
             and record['consent_complete'] == '2'
             and record['site'] == hdr_fields['site']
             and record['site'] in SITE_LIST
-            and datetime.strptime(record['mri_date'], DATE_FORMAT_RC) == hdr_fields['date']
+            and datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
+            == hdr_fields['date']
             and REDCAP_KEY['am_pm'][record['mri_ampm']] == hdr_fields['am_pm']
             and record['mri'].casefold() == hdr_fields['sub_id']
         ):
-
             if record[mri_pi_field].casefold() == hdr_fields['pi_id'] or (
                 record[mri_pi_field] == '99'
                 and record[f'{mri_pi_field}_other'].casefold() == hdr_fields['pi_id']
@@ -393,13 +403,15 @@ def generate_wbhi_id(matches: list, site: str, id_list: list) -> str:
 def tag_session_wbhi(session: SessionListOutput) -> None:
     """Tags a session with 'wbhi' and removes any redcap tags"""
     redcap_tags = [tag for tag in session.tags if tag.startswith('redcap')]
-    session.add_tag('wbhi')
+    if 'wbhi' not in session.tags:
+        session.add_tag('wbhi')
     if redcap_tags:
         for tag in redcap_tags:
             session.delete_tag(tag)
     for acq in session.acquisitions():
         for f in acq.files:
-            f.add_tag('wbhi')
+            if 'wbhi' not in f.tags:
+                f.add_tag('wbhi')
 
 
 def tag_session_redcap(session: SessionListOutput) -> None:
@@ -511,7 +523,7 @@ def smarter_copy(
     all acquisitions from acq_list to a tmp project, waits for it to complete, moves
     the sessions to the existing project, checks that they exist in the destination project,
     then deletes the tmp."""
-    log.debug("Starting smarter copy")
+    log.debug('Starting smarter copy')
     to_copy_tag = f'to_copy_{dst_project.label}'
     tmp_project_label = f'{dst_project.group}_{dst_project.label}'
 
@@ -549,7 +561,7 @@ def smarter_copy(
 
     tmp_project_id = smart_copy(
         src_project,
-        'tmp2',
+        'tmp',
         to_copy_tag,
         tmp_project_label,
         True,
@@ -558,13 +570,14 @@ def smarter_copy(
     check_smartcopy_loop(tmp_project)
     mv_all_sessions(tmp_project, dst_project)
     check_copied_acq_exist(acq_list, dst_project)
-    delete_project('tmp2', tmp_project_label)
+    delete_project('tmp', tmp_project_label)
 
 
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
-    to project named after pi-id."""
+    to project named after pi-id. If 'manual_copy_<PI_ID>' tag exists for a
+    session, this PI_ID gets used instead of pulling from dicom header."""
     log.info('Checking "%s/Inbound Data" sessions to smart-copy.', site)
     site_project = client.lookup(f'{site}/Inbound Data')
     sessions = get_sessions_pi_copy(site_project)
@@ -574,19 +587,28 @@ def pi_copy(site: str) -> None:
 
     for session in sessions:
         hdr_list = []
+        manual_pi_id = [
+            t.split('manual_copy_')[1]
+            for t in session.tags
+            if t.startswith('manual_copy_')
+        ]
+
         for acq in session.acquisitions():
-            try:
-                acq_hdr_fields = get_hdr_fields(acq, site)
-            except ValueError as e:
-                log.debug(f'Problem with DICOM header: {e}')
-                continue
-            if acq_hdr_fields['error']:
-                continue
-            hdr_list.append(acq_hdr_fields)
-            if acq_hdr_fields['pi_id'].isalnum():
-                pi_id = acq_hdr_fields['pi_id']
+            if manual_pi_id:
+                pi_id = manual_pi_id[0]
             else:
-                pi_id = 'other'
+                try:
+                    acq_hdr_fields = get_hdr_fields(acq, site)
+                except ValueError as e:
+                    log.debug(f'Problem with DICOM header: {e}')
+                    continue
+                if acq_hdr_fields['error']:
+                    continue
+                hdr_list.append(acq_hdr_fields)
+                if acq_hdr_fields['pi_id'].isalnum():
+                    pi_id = acq_hdr_fields['pi_id']
+                else:
+                    pi_id = 'other'
             if f'copied_{pi_id}' not in acq.tags:
                 copy_dict[pi_id].append(acq)
 
@@ -669,7 +691,10 @@ def redcap_match_mv(
                 subject = client.get_subject(session.parents.subject)
                 subject.update({'label': wbhi_id})
                 mv_session(session, pre_deid_project)
-                log.info('Updated REDCap and Flywheel to include newly generated wbhi-id: %s', wbhi_id)
+                log.info(
+                    'Updated REDCap and Flywheel to include newly generated wbhi-id: %s',
+                    wbhi_id,
+                )
         else:
             log.error('Failed to update records on REDCap')
     else:
@@ -717,7 +742,8 @@ def manual_match(
             mv_session(session, pre_deid_project)
 
         log.info(
-            'Updated REDCap and Flywheel to include newly generated wbhi-id: %s', wbhi_id
+            'Updated REDCap and Flywheel to include newly generated wbhi-id: %s',
+            wbhi_id,
         )
 
 
@@ -762,12 +788,20 @@ def requires_deid(session: SessionListOutput, deid_project: ProjectOutput) -> bo
     if not dst_session:
         # Failing case, may need to be recopied?
         # No session MAC^Standard Protocols: PPG\,ADRC\,BRANCH\,ETC found for subject C36M0D in deid project
-        log.info('No session %s found for subject %s in deid project', session_label, sub_label)
+        log.info(
+            'No session %s found for subject %s in deid project',
+            session_label,
+            sub_label,
+        )
         return True
     src_acqs = set(acq.label for acq in session.acquisitions())
     dst_acqs = set(acq.label for acq in dst_session.acquisitions())
     if src_acqs != dst_acqs:
-        log.info('Acquisitions do not match for subject %s session %s', sub_label, session_label)
+        log.info(
+            'Acquisitions do not match for subject %s session %s',
+            sub_label,
+            session_label,
+        )
         return True
     # Tag to speed up future runs
     session.add_tag('deid')
