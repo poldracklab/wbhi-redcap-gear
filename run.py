@@ -453,7 +453,7 @@ def delete_project(group_id: str, project_label) -> None:
     """Deletes a project."""
     group = client.get_group(group_id)
     if group:
-        project = group.projects.find_first(f'label={project_label}')
+        project = group.projects.find_first(f'label="{project_label}"')
         if project:
             client.delete_project(project.id)
             log.info('Deleted project %s', f'{group_id}/{project_label}')
@@ -627,7 +627,7 @@ def pi_copy(site: str) -> None:
         group = client.get_group(site)
         for pi_id, acq_list in copy_dict.items():
             log.info('Found %d acquisitions to copy for PI: %s', len(acq_list), pi_id)
-            pi_project = group.projects.find_first(f'label={pi_id}')
+            pi_project = group.projects.find_first(f'label="{pi_id}"')
             if not pi_project:
                 log.error('Probably need to be added to %s %s', site, pi_id)
                 client.add_project(body={'group': site, 'label': pi_id})
@@ -712,7 +712,7 @@ def manual_match(
 
     for i, row in match_df.iterrows():
         project = client.lookup(f'{row.site}/Inbound data')
-        subject = project.subjects.find_first(f'label={row.sub_label}')
+        subject = project.subjects.find_first(f'label="{row.sub_label}"')
         if not subject:
             log.error('Flywheel subject %s was not found.', row.sub_label)
             continue
