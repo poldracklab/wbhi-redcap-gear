@@ -50,6 +50,11 @@
 			"description": "Ignore sessions that are less than n days old. Default = 1 day.",
 			"type": "integer",
 			"default": 1
+		},
+		"dry_run": {
+			"description": "Run dry-run. Dry-runs do not make any changes to REDCap or Flywheel.",
+			"type": "boolean",
+			"default": false
 		}
 	},
 	"command": "python run.py"
