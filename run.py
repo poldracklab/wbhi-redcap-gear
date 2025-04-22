@@ -8,8 +8,8 @@ import sys
 import pip
 import pandas as pd
 import logging
-from drypy import dryrun
-from drypy.patterns import sham, sentinel
+from drypy import dryrun, set_logging_level
+from drypy.patterns import sham
 from redcap import Project
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -303,9 +303,10 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             continue
         elif not dst_session.acquisitions.find_first(f'copy_of={acq.id}'):
             log.error(
-                'No copy of %s (label=%s) found in %s',
+                'No copy of %s (label=%s) found in %s/%s',
                 acq.id,
                 acq.label,
+                dst_subject.label,
                 dst_session.label,
             )
             acq_list_failed.append(acq)
@@ -531,6 +532,7 @@ def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame) -> No
     subject.update({'label': new_label})
 
 
+
 @sham
 def smarter_copy(
     acq_list: list, src_project: ProjectOutput, dst_project: ProjectOutput
@@ -619,21 +621,20 @@ def pi_copy(site: str) -> None:
         ]
 
         for acq in session.acquisitions():
+            try:
+                acq_hdr_fields = get_hdr_fields(acq, site)
+            except ValueError as e:
+                log.debug(f'Problem with DICOM header: {e}')
+                continue
+            if acq_hdr_fields['error']:
+                continue
+            hdr_list.append(acq_hdr_fields)
             if manual_pi_id:
                 pi_id = manual_pi_id[0]
+            elif acq_hdr_fields['pi_id'].isalnum():
+                pi_id = acq_hdr_fields['pi_id']
             else:
-                try:
-                    acq_hdr_fields = get_hdr_fields(acq, site)
-                except ValueError as e:
-                    log.debug(f'Problem with DICOM header: {e}')
-                    continue
-                if acq_hdr_fields['error']:
-                    continue
-                hdr_list.append(acq_hdr_fields)
-                if acq_hdr_fields['pi_id'].isalnum():
-                    pi_id = acq_hdr_fields['pi_id']
-                else:
-                    pi_id = 'other'
+                pi_id = 'other'
             if f'copied_{pi_id}' not in acq.tags:
                 copy_dict[pi_id].append(acq)
 
@@ -658,7 +659,7 @@ def pi_copy(site: str) -> None:
         log.info('No sessions were smart-copied.')
 
 
-@sentinel(return_value={'dry_run': True, 'count': 0})
+@sham(return_value={'dry_run': True, 'count': 0})
 def import_records_wrapper(redcap_project: Project, new_records: list) -> dict:
     """Dry-run wrapper for <redcap_project>.import_records()"""
     response = redcap_project.import_records(new_records)
@@ -852,6 +853,7 @@ def main():
 
     if config['dry_run']:
         dryrun(True)
+        set_logging_level(10)
     redcap_api_key = config['redcap_api_key']
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = redcap_project.export_records()
