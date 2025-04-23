@@ -61,6 +61,12 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
         if 'skip_redcap' in session.tags or 'need_to_split' in session.tags:
             log.info('Skipping session %s due to tag', session.label)
             continue
+        if not any(tag.startswith('copied_') for tag in session.tags):
+            log.info(
+                'Skipping session %s because missing "copied_<pi_id>" tag',
+                session.label,
+            )
+            continue
 
         # Convert from PST to UTC
         timestamp = session.timestamp.replace(tzinfo=PST).astimezone(timezone.utc)
@@ -298,7 +304,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
                 'No copy of %s (label=%s) found in %s',
                 acq.id,
                 acq.label,
-                dst_session.label,
+                pi_project.label,
             )
             acq_list_failed.append(acq)
         else:
@@ -716,6 +722,18 @@ def manual_match(
         if not subject:
             log.error('Flywheel subject %s was not found.', row.sub_label)
             continue
+
+        sessions = subject.sessions()
+        for session in sessions:
+            if not any(tag.startswith('copied_') for tag in session.tags):
+                log.info(
+                    'Skipping subject %s because missing "copied_<pi_id>" tag',
+                    subject.label,
+                )
+                missing_copied_tag = True
+        if missing_copied_tag:
+            continue
+
         record = next(
             (
                 item
@@ -736,7 +754,6 @@ def manual_match(
             continue
         subject.update({'label': wbhi_id})
         id_list.append(wbhi_id)
-        sessions = subject.sessions()
         for session in sessions:
             tag_session_wbhi(session)
             mv_session(session, pre_deid_project)
