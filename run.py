@@ -43,9 +43,16 @@ WAIT_TIMEOUT = 3600 * 2
 def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
     """Get and filter sessions for pi_copy()"""
     sessions = []
+    now = datetime.now(timezone.utc)
+    PST = timezone(timedelta(hours=-8))
     for session in fw_project.sessions():
         if any(tag.startswith('copied_') for tag in session.tags):
             continue
+        timestamp = session.timestamp.replace(tzinfo=PST).astimezone(timezone.utc)
+        if (now - timestamp) < timedelta(hours=6):
+            log.info('Skipping pi_copy of session %s because less than 6 hours have passed.' % session.label)
+            continue
+
         sessions.append(session)
     return sessions
 
