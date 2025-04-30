@@ -40,12 +40,26 @@ log = logging.getLogger(__name__)
 WAIT_TIMEOUT = 3600 * 2
 
 
+def timedelta_from_now(in_timestamp: datetime, tz_from_utc: int = -8) -> timedelta:
+    now = datetime.now(timezone.utc)
+    PST = timezone(timedelta(hours=tz_from_utc))
+    UTC_timestamp = in_timestamp.replace(tzinfo=PST).astimezone(timezone.utc)
+    return now - UTC_timestamp
+
+
 def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
     """Get and filter sessions for pi_copy()"""
     sessions = []
     for session in fw_project.sessions():
         if any(tag.startswith('copied_') for tag in session.tags):
             continue
+        if timedelta_from_now(session.timestamp) < timedelta(hours=6):
+            log.info(
+                'Skipping pi_copy of session %s because less than 6 hours have passed.'
+                % session.label
+            )
+            continue
+
         sessions.append(session)
     return sessions
 
@@ -54,19 +68,20 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     """Get and filter sessions for redcap_match_mv"""
     sessions = []
     today = datetime.today()
-    now = datetime.now(timezone.utc)
-    # MG: Does not account for daylight savings (-7) but should be precise enough
-    PST = timezone(timedelta(hours=-8))
     for session in fw_project.sessions():
         if 'skip_redcap' in session.tags or 'need_to_split' in session.tags:
             log.info('Skipping session %s due to tag', session.label)
             continue
-
-        # Convert from PST to UTC
-        timestamp = session.timestamp.replace(tzinfo=PST).astimezone(timezone.utc)
-        if (now - timestamp) < timedelta(days=config['ignore_until_n_days_old']):
+        if not any(tag.startswith('copied_') for tag in session.tags):
+            log.info(
+                'Skipping session %s because missing "copied_<pi_id>" tag',
+                session.label,
+            )
             continue
-
+        if timedelta_from_now(session.timestamp) < timedelta(
+            days=config['ignore_until_n_days_old']
+        ):
+            continue
         redcap_tags = [t for t in session.tags if t.startswith('redcap')]
         if not redcap_tags:
             sessions.append(session)
@@ -203,7 +218,7 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
         builder.column(src=c)
 
     view = builder.build()
-    return client.read_view_dataframe(view, container.id)
+    return client.read_view_dataframe(view, container.id, opts={"dtype": {"subject.label": str}})
 
 
 def smart_copy(
@@ -298,7 +313,7 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
                 'No copy of %s (label=%s) found in %s',
                 acq.id,
                 acq.label,
-                dst_session.label,
+                pi_project.label,
             )
             acq_list_failed.append(acq)
         else:
@@ -716,6 +731,18 @@ def manual_match(
         if not subject:
             log.error('Flywheel subject %s was not found.', row.sub_label)
             continue
+
+        sessions = subject.sessions()
+        for session in sessions:
+            if not any(tag.startswith('copied_') for tag in session.tags):
+                log.info(
+                    'Skipping subject %s because missing "copied_<pi_id>" tag',
+                    subject.label,
+                )
+                missing_copied_tag = True
+        if missing_copied_tag:
+            continue
+
         record = next(
             (
                 item
@@ -736,7 +763,6 @@ def manual_match(
             continue
         subject.update({'label': wbhi_id})
         id_list.append(wbhi_id)
-        sessions = subject.sessions()
         for session in sessions:
             tag_session_wbhi(session)
             mv_session(session, pre_deid_project)
