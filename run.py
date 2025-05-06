@@ -626,7 +626,8 @@ def pi_copy(site: str) -> None:
     sessions = get_sessions_pi_copy(site_project)
     copy_dict = defaultdict(list)
     if sessions:
-        log.info('%d session(s) have not been copied:', len(sessions))
+        session_id_list = [s.id for s in sessions]
+        log.info('%d session(s) have not been copied: %s', len(sessions), session_id_list)
 
     for session in sessions:
         hdr_list = []
@@ -777,6 +778,7 @@ def manual_match(
             continue
 
         sessions = subject.sessions()
+        missing_copied_tag = False
         for session in sessions:
             if not any(tag.startswith('copied_') for tag in session.tags):
                 log.info(
