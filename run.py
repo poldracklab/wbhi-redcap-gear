@@ -30,6 +30,7 @@ from wbhiutils.constants import (  # noqa: E402
     SITE_LIST,
     DATETIME_FORMAT_FW,
     DATE_FORMAT_FW,
+    DATETIME_FORMAT_RC,
     DATE_FORMAT_RC,
     SITE_KEY,
     REDCAP_API_URL,
@@ -222,7 +223,9 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
         builder.column(src=c)
 
     view = builder.build()
-    return client.read_view_dataframe(view, container.id, opts={"dtype": {"subject.label": str}})
+    return client.read_view_dataframe(
+        view, container.id, opts={'dtype': {'subject.label': str}}
+    )
 
 
 @sham
@@ -548,7 +551,6 @@ def rename_duplicate_subject(subject: SubjectOutput, acq_df: pd.DataFrame) -> No
     subject.update({'label': new_label})
 
 
-
 @sham
 def smarter_copy(
     acq_list: list, src_project: ProjectOutput, dst_project: ProjectOutput
@@ -627,7 +629,9 @@ def pi_copy(site: str) -> None:
     copy_dict = defaultdict(list)
     if sessions:
         session_id_list = [s.id for s in sessions]
-        log.info('%d session(s) have not been copied: %s', len(sessions), session_id_list)
+        log.info(
+            '%d session(s) have not been copied: %s', len(sessions), session_id_list
+        )
 
     for session in sessions:
         hdr_list = []
@@ -696,6 +700,22 @@ def add_tag_wrapper(container, tag: str) -> None:
     container.add_tag(tag)
 
 
+def long_redcap_interval_tag(
+    session: SessionListOutput, hdr_fields: dict, record: dict
+) -> None:
+    """Checks whether the interval between the session and redcap record is > 2 weeks.
+    If so, tags the session with 'long-redcap-interval_unsent'."""
+    tag = 'long-redcap-interval_unsent'
+    max_delta = timedelta(days=14)
+    interval_delta = (
+        datetime.strptime(record['consent_timestamp'], DATETIME_FORMAT_RC)
+        - hdr_fields['date']
+    )
+    if interval_delta > max_delta or interval_delta < -max_delta:
+        if tag not in session.tags:
+            add_tag_wrapper(session, tag)
+
+
 def redcap_match_mv(
     site: str, redcap_data: list, redcap_project: Project, id_list: list
 ) -> None:
@@ -739,6 +759,7 @@ def redcap_match_mv(
             for match in matches:
                 match['rid'] = wbhi_id
                 new_records.append(match)
+                long_redcap_interval_tag(session, hdr_fields, match)
         else:
             tag_session_redcap(session)
 
@@ -885,7 +906,7 @@ def main():
         set_logging_level(10)
     redcap_api_key = config['redcap_api_key']
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
-    redcap_data = redcap_project.export_records()
+    redcap_data = redcap_project.export_records(export_survey_fields=True)
     id_list = [record['rid'] for record in redcap_data]
 
     match_csv = gtk_context.get_input_path('match_csv')
