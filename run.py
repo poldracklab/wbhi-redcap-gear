@@ -36,6 +36,7 @@ from wbhiutils.constants import (  # noqa: E402
     REDCAP_API_URL,
     REDCAP_KEY,
     WBHI_ID_SUFFIX_LENGTH,
+    SOFTWARE_DICT,
 )
 
 
@@ -166,6 +167,12 @@ def get_hdr_fields(acq: AcquisitionListOutput, site: str) -> dict:
         )
     except KeyError:
         log.debug('%s problem fetching SERIES DATETIME', dcm)
+        return error
+
+    try:
+        meta['software_version'] = dcm_hdr['SoftwareVersions']
+    except KeyError:
+        log.debug('%s problem fetching SoftwareVersions', dcm)
         return error
 
     return meta
@@ -618,6 +625,23 @@ def get_or_create_proj(group: Group, proj_label: string) -> ProjectOutput:
     return client.lookup(os.path.join(group.id, proj_label))
 
 
+def check_software_version(
+    site: str, session: SessionListOutput, hdr_fields: dict
+) -> None:
+    """Checks whether SoftwareVersions in a dicom header matches the
+    site-specific version in SOFTWARE_DICT. If not, tag session as
+    software-mismatch_unsent"""
+    if hdr_fields['software_version'] != SOFTWARE_DICT[site]:
+        tag = 'software-mismatch_unsent'
+        if tag not in session.tags:
+            add_tag_wrapper(session, tag)
+            log.info(
+                'Session %s has a software version that doesn\'t match SOFTWARE_DICT. Tagging with "%s".',
+                session.id,
+                tag,
+            )
+
+
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
     been smart-copied yet. Determines the pi-id from the dicom and smart-copies
@@ -641,6 +665,7 @@ def pi_copy(site: str) -> None:
             if t.startswith('manual_copy_')
         ]
 
+        first_acq = True
         for acq in session.acquisitions():
             try:
                 acq_hdr_fields = get_hdr_fields(acq, site)
@@ -649,6 +674,10 @@ def pi_copy(site: str) -> None:
                 continue
             if acq_hdr_fields['error']:
                 continue
+            if first_acq:
+                first_acq = False
+                check_software_version(site, session, acq_hdr_fields)
+
             hdr_list.append(acq_hdr_fields)
             if manual_pi_id:
                 pi_id = manual_pi_id[0]
@@ -705,15 +734,20 @@ def long_redcap_interval_tag(
 ) -> None:
     """Checks whether the interval between the session and redcap record is > 2 weeks.
     If so, tags the session with 'long-redcap-interval_unsent'."""
-    tag = 'long-redcap-interval_unsent'
     max_delta = timedelta(days=14)
     interval_delta = (
         datetime.strptime(record['consent_timestamp'], DATETIME_FORMAT_RC)
         - hdr_fields['date']
     )
     if interval_delta > max_delta or interval_delta < -max_delta:
+        tag = 'long-redcap-interval_unsent'
         if tag not in session.tags:
             add_tag_wrapper(session, tag)
+            log.info(
+                'Session %s had a redcap-flywheel interval > 2 weeks. Tagging with "%s".',
+                session.id,
+                tag,
+            )
 
 
 def redcap_match_mv(
