@@ -735,11 +735,11 @@ def long_redcap_interval_tag(
     """Checks whether the interval between the session and redcap record is > 2 weeks.
     If so, tags the session with 'long-redcap-interval_unsent'."""
     max_delta = timedelta(days=14)
-    interval_delta = (
+    interval_delta = abs(
         datetime.strptime(record['consent_timestamp'], DATETIME_FORMAT_RC)
         - hdr_fields['date']
     )
-    if interval_delta > max_delta or interval_delta < -max_delta:
+    if interval_delta > max_delta:
         tag = 'long-redcap-interval_unsent'
         if tag not in session.tags:
             add_tag_wrapper(session, tag)
