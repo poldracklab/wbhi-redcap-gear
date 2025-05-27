@@ -277,9 +277,9 @@ def smart_copy(
 def check_smartcopy_job_complete(dst_project: ProjectOutput) -> bool:
     """Check if a smart copy job is complete."""
     copy_status = dst_project.reload().copy_status
-    if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
+    if copy_status == flywheel.CopyStatus.COMPLETED:
         return True
-    elif copy_status == flywheel.ProjectCopyStatus.FAILED:
+    elif copy_status == flywheel.CopyStatus.FAILED:
         raise RuntimeError(f'Smart copy job to project {dst_project} failed')
     else:
         return False
