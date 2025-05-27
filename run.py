@@ -277,9 +277,9 @@ def smart_copy(
 def check_smartcopy_job_complete(dst_project: ProjectOutput) -> bool:
     """Check if a smart copy job is complete."""
     copy_status = dst_project.reload().copy_status
-    if copy_status == flywheel.ProjectCopyStatus.COMPLETED:
+    if copy_status == flywheel.CopyStatus.COMPLETED:
         return True
-    elif copy_status == flywheel.ProjectCopyStatus.FAILED:
+    elif copy_status == flywheel.CopyStatus.FAILED:
         raise RuntimeError(f'Smart copy job to project {dst_project} failed')
     else:
         return False
@@ -391,13 +391,17 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
             log.debug('REDCap record missing required key(s): %s', missing_redcap)
             continue
 
+        try:
+            date_rc = datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
+        except ValueError:
+            continue
+
         if (
             record['icf_consent'] == '1'
             and record['consent_complete'] == '2'
             and record['site'] == hdr_fields['site']
             and record['site'] in SITE_LIST
-            and datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
-            == hdr_fields['date']
+            and date_rc == hdr_fields['date']
             and REDCAP_KEY['am_pm'][record['mri_ampm']] == hdr_fields['am_pm']
             and record['mri'].casefold() == hdr_fields['sub_id']
         ):
