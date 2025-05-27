@@ -391,13 +391,17 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
             log.debug('REDCap record missing required key(s): %s', missing_redcap)
             continue
 
+        try:
+            date_rc = datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
+        except ValueError:
+            continue
+
         if (
             record['icf_consent'] == '1'
             and record['consent_complete'] == '2'
             and record['site'] == hdr_fields['site']
             and record['site'] in SITE_LIST
-            and datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
-            == hdr_fields['date']
+            and date_rc == hdr_fields['date']
             and REDCAP_KEY['am_pm'][record['mri_ampm']] == hdr_fields['am_pm']
             and record['mri'].casefold() == hdr_fields['sub_id']
         ):
