@@ -337,18 +337,24 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             )
             acq_list_failed.append(acq)
         else:
-            try:
+            if to_copy_tag in acq.tags: 
                 acq.delete_tag(to_copy_tag)
+            else:
+                log.warning('Acq %s can\'t delete %s because it doesn\'t contain that tag.',
+                    acq.id,
+                    to_copy_tag,
+                )
+            if copied_tag not in acq.tags:
                 acq.add_tag(copied_tag)
-            except Exception:
-                breakpoint()
-            # flywheel.rest.ApiException: (409) Reason: Tag already exists
-            # tmp/ucsd_qa to ucsd/qa
+            else:
+                log.warning('Acq %s can\'t add %s because it already contains that tag.',
+                    acq.id,
+                    copied_tag,
+                )
 
     if acq_list_failed:
         acq_labels = [(acq.parents.session, acq.label) for acq in acq_list_failed]
         log.error('%s failed to smart-copy to %s', acq_labels, pi_project.label)
-        sys.exit(1)
 
     # Tag session if all acqs are tagged to save time when filtering sessions in future runs
     for session_id in session_set:
