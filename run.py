@@ -61,7 +61,7 @@ def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
         if timedelta_from_now(session.timestamp) < timedelta(hours=6):
             log.info(
                 'Skipping pi_copy of session %s because less than 6 hours have passed.'
-                % session.label
+                % session.id
             )
             continue
 
@@ -75,12 +75,12 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
     today = datetime.today()
     for session in fw_project.sessions():
         if 'skip_redcap' in session.tags or 'need_to_split' in session.tags:
-            log.info('Skipping session %s due to tag', session.label)
+            log.info('Skipping session %s due to tag', session.id)
             continue
         if not any(tag.startswith('copied_') for tag in session.tags):
             log.info(
                 'Skipping session %s because missing "copied_<pi_id>" tag',
-                session.label,
+                session.id,
             )
             continue
         if timedelta_from_now(session.timestamp) < timedelta(
@@ -92,7 +92,7 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
             sessions.append(session)
             continue
         elif len(redcap_tags) > 1:
-            log.warning('%s has multiple redcap tags: %s', session.label, redcap_tags)
+            log.warning('%s has multiple redcap tags: %s', session.id, redcap_tags)
             redcap_tags = [sorted(redcap_tags)[-1]]
         tag_date_str = redcap_tags[0].split('_')[-1]
         tag_date = datetime.strptime(tag_date_str, DATE_FORMAT_FW)
@@ -200,14 +200,14 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
     if time_diff.max() > threshold:
         log.info(
             'Difference between acquisitions > 4 hours, splitting session %s',
-            session.label,
+            session.id,
         )
         need_to_split = True
 
     if need_to_split:
         if 'need_to_split' not in session.tags:
             session.add_tag('need_to_split')
-        logging.error('Need to split session %s', session.label)
+        logging.error('Need to split session %s', session.id)
 
 
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
@@ -529,7 +529,7 @@ def mv_session(session: SessionListOutput, dst_project: ProjectOutput) -> None:
         else:
             log.exception(
                 'Error moving subject %s from %s to %s',
-                f'{session.subject.label}/{session.label}',
+                session.subject.label,
                 session.id,
                 dst_project.label,
             )
@@ -700,8 +700,7 @@ def pi_copy(site: str) -> None:
 
         if not hdr_list:
             log.warning(
-                'Could not parse any acquisition headers for session %s (id: %s)',
-                session.label,
+                'Could not parse any acquisition headers for session %s',
                 session.id,
             )
             continue
