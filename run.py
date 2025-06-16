@@ -801,6 +801,7 @@ def redcap_match_mv(
             wbhi_id_session_dict[wbhi_id] = session
             for match in matches:
                 match['rid'] = wbhi_id
+                match['scanner_platform'] = hdr_fields['software_version']
                 new_records.append(match)
                 long_redcap_interval_tag(session, hdr_fields, match)
         else:
