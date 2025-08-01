@@ -651,6 +651,46 @@ def check_software_version(
                 tag,
             )
 
+def get_pi_id(session: SessionListOutput, site: str) -> str:
+    """Returns the pi_id of a session. If unable to determine, returns 'other'"""
+    
+    hdr_list = []
+    manual_pi_id = [
+        t.split('manual_copy_')[1]
+        for t in session.tags
+        if t.startswith('manual_copy_')
+    ]
+
+    for acq in session.acquisitions():
+        try:
+            hdr_fields = get_hdr_fields(acq, site)
+            if hdr_fields['error']:
+                continue
+        except ValueError as e:
+            log.debug(f'Problem with DICOM header: {e}')
+            continue
+
+        hdr_list.append(hdr_fields)
+
+    pi_id = 'other'
+    for hdr_fields in hdr_list:
+        check_software_version(site, session, hdr_fields)
+        if manual_pi_id:
+            pi_id = manual_pi_id[0]
+            break
+        elif hdr_fields['pi_id'].isalnum():
+            pi_id = hdr_fields['pi_id']
+            break
+            
+    if not hdr_list:
+        log.warning(
+            'Could not parse any acquisition headers for session %s',
+            session.id,
+        )
+    elif 'skip_split' not in session.tags:
+        split_session(session, hdr_list)
+
+    return pi_id
 
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
@@ -668,45 +708,10 @@ def pi_copy(site: str) -> None:
         )
 
     for session in sessions:
-        hdr_list = []
-        manual_pi_id = [
-            t.split('manual_copy_')[1]
-            for t in session.tags
-            if t.startswith('manual_copy_')
-        ]
+        pi_id = get_pi_id(session, site)
 
-        first_acq = True
-        for acq in session.acquisitions():
-            try:
-                acq_hdr_fields = get_hdr_fields(acq, site)
-            except ValueError as e:
-                log.debug(f'Problem with DICOM header: {e}')
-                continue
-            if acq_hdr_fields['error']:
-                continue
-            if first_acq:
-                first_acq = False
-                check_software_version(site, session, acq_hdr_fields)
-
-            hdr_list.append(acq_hdr_fields)
-            if manual_pi_id:
-                pi_id = manual_pi_id[0]
-            elif acq_hdr_fields['pi_id'].isalnum():
-                pi_id = acq_hdr_fields['pi_id']
-            else:
-                pi_id = 'other'
-            if f'copied_{pi_id}' not in acq.tags:
-                copy_dict[pi_id].append(acq)
-
-        if not hdr_list:
-            log.warning(
-                'Could not parse any acquisition headers for session %s',
-                session.id,
-            )
-            continue
-
-        if 'skip_split' not in session.tags:
-            split_session(session, hdr_list)
+        if f'copied_{pi_id}' not in session.tags:
+            copy_dict[pi_id].extend(session.acquisitions())
 
     if copy_dict:
         group = client.get_group(site)
