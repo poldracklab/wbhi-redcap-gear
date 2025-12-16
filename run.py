@@ -836,7 +836,7 @@ def manual_match(
 ) -> None:
     """Manually matches a flywheel session and a redcap record."""
 
-    match_df = pd.read_csv(csv_path, names=('site', 'participant_id', 'sub_label'))
+    match_df = pd.read_csv(csv_path, names=('site', 'participant_id', 'sub_label'), dtype={'sub_label': str})
     match_df['sub_label'] = match_df['sub_label'].str.replace(',', r'\,')
     pre_deid_project = client.lookup('wbhi/pre-deid')
 
