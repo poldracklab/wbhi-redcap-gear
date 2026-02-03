@@ -901,9 +901,12 @@ def deid() -> None:
     deid_gear = client.lookup('gears/deid-export')
     inputs = {'deid_profile': deid_template}
     config = {
-        'project_path': 'wbhi/deid',
-        'overwrite_files': 'Skip',
         'debug': True,
+        'delete_reason': 'compliance_phi',
+        'match_by_id': [],
+        'overwrite_files': 'Skip',
+        'project_path': 'wbhi/deid',
+        'session_level_profile': False,
     }
     for session in pre_deid_project.sessions():
         if requires_deid(session, deid_project):
