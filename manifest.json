@@ -2,7 +2,7 @@
 	"name": "wbhi-redcap",
 	"label": "WBHI REDCap Gear",
 	"description": "Queries REDCap using DICOM metadata on Flywheel to find scans matching consenting participants.",
-	"version": "1.2.0,
+	"version": "1.2.0",
 	"author": "Joe Wexler",
 	"maintainer": "Joe Wexler",
 	"cite": "",
