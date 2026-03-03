@@ -37,6 +37,7 @@ from wbhiutils.constants import (  # noqa: E402
     REDCAP_KEY,
     WBHI_ID_SUFFIX_LENGTH,
     SOFTWARE_DICT,
+    ARCHIVE_DAYS,
 )
 
 
@@ -210,7 +211,7 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
         logging.error('Need to split session %s', session.id)
 
 
-def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
+def create_view_df(container, columns: list, filter=None, container_type="acquisition") -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
 
     This is done using a single Data View which is more efficient than iterating through
@@ -218,7 +219,7 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
     """
 
     builder = flywheel.ViewBuilder(
-        container='acquisition',
+        container=container_type,
         filename='*.*',
         match='all',
         filter=filter,
@@ -337,17 +338,19 @@ def check_copied_acq_exist(acq_list: list, pi_project: ProjectOutput) -> None:
             )
             acq_list_failed.append(acq)
         else:
-            if to_copy_tag in acq.tags: 
+            if to_copy_tag in acq.tags:
                 acq.delete_tag(to_copy_tag)
             else:
-                log.warning('Acq %s can\'t delete %s because it doesn\'t contain that tag.',
+                log.warning(
+                    "Acq %s can't delete %s because it doesn't contain that tag.",
                     acq.id,
                     to_copy_tag,
                 )
             if copied_tag not in acq.tags:
                 acq.add_tag(copied_tag)
             else:
-                log.warning('Acq %s can\'t add %s because it already contains that tag.',
+                log.warning(
+                    "Acq %s can't add %s because it already contains that tag.",
                     acq.id,
                     copied_tag,
                 )
@@ -651,14 +654,13 @@ def check_software_version(
                 tag,
             )
 
+
 def get_pi_id(session: SessionListOutput, site: str) -> str:
     """Returns the pi_id of a session. If unable to determine, returns 'other'"""
-    
+
     hdr_list = []
     manual_pi_id = [
-        t.split('manual_copy_')[1]
-        for t in session.tags
-        if t.startswith('manual_copy_')
+        t.split('manual_copy_')[1] for t in session.tags if t.startswith('manual_copy_')
     ]
 
     for acq in session.acquisitions():
@@ -681,7 +683,7 @@ def get_pi_id(session: SessionListOutput, site: str) -> str:
         elif hdr_fields['pi_id'].isalnum():
             pi_id = hdr_fields['pi_id']
             break
-            
+
     if not hdr_list:
         log.warning(
             'Could not parse any acquisition headers for session %s',
@@ -691,6 +693,7 @@ def get_pi_id(session: SessionListOutput, site: str) -> str:
         split_session(session, hdr_list)
 
     return pi_id
+
 
 def pi_copy(site: str) -> None:
     """Finds acquisitions in the site's 'Inbound Data' project that haven't
@@ -836,7 +839,11 @@ def manual_match(
 ) -> None:
     """Manually matches a flywheel session and a redcap record."""
 
-    match_df = pd.read_csv(csv_path, names=('site', 'participant_id', 'sub_label'), dtype={'sub_label': str})
+    match_df = pd.read_csv(
+        csv_path,
+        names=('site', 'participant_id', 'sub_label'),
+        dtype={'sub_label': str},
+    )
     match_df['sub_label'] = match_df['sub_label'].str.replace(',', r'\,')
     pre_deid_project = client.lookup('wbhi/pre-deid')
 
@@ -915,7 +922,7 @@ def deid() -> None:
 
 def requires_deid(session: SessionListOutput, deid_project: ProjectOutput) -> bool:
     """Check a session (`wbhi/pre-deid`) and verify all files are present in the `wbhi/deid` project."""
-    if 'deid' in session.tags:  # MG: Is this safe to assume?
+    if 'deid' in session.tags:
         log.debug('Session %s already tagged as deid, skipping', session.id)
         return False
     sub_label = client.get_subject(session.parents.subject).label.replace(',', r'\,')
@@ -949,6 +956,52 @@ def requires_deid(session: SessionListOutput, deid_project: ProjectOutput) -> bo
     return False
 
 
+def archive_redcap(
+    redcap_data: list, redcap_project: Project, archive_threshold: str
+) -> None:
+    """Archives unmatched redcap records and flywheel sessions older than archive_threshold."""
+
+    new_records = []
+    for record in redcap_data:
+        record_date = datetime.strptime(record['consent_timestamp'][:10], '%Y-%m-%d')
+        if record['rid'] in ('', ' ') and record_date < archive_threshold:
+            new_record = record.copy()
+            new_record['admin_archived'] = 1
+            new_records.append(new_record)
+            log.info("Redcap record %s remains unmatched after 90 days. Archiving." % record['rid'])
+
+    if new_records:
+        import_records_wrapper(redcap_project, new_records)
+
+
+def archive_flywheel(site: str, archive_threshold: str) -> None:
+    """Moves unmatched flywheel sessions to wbhi/archived if older than archive_threshold."""
+    container = client.lookup(f'{site}/Inbound data')
+    columns = [
+        "subject.label",
+        "session.label",
+        "session.id",
+        "session.created",
+    ]
+    session_df = create_view_df(container, columns, container_type="session")
+
+    if session_df.empty:
+        return
+
+    session_df.loc[:, "session_created"] = pd.to_datetime(
+        session_df["session.created"].str[:10]
+    ).dt.to_pydatetime()
+    archive_df = session_df[session_df['session_created'] < archive_threshold]
+
+    archived_project = client.lookup("wbhi/archived")
+    for session_id in archive_df["session.id"]:
+        log.info("Flywheel session %s remains unmatched after 90 days. Archiving." % session_id)
+        session = client.get_session(session_id)
+        add_tag_wrapper(session, "archived")
+        mv_session(session, archived_project)
+
+
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
@@ -959,15 +1012,24 @@ def main():
     redcap_api_key = config['redcap_api_key']
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = redcap_project.export_records(export_survey_fields=True)
-    id_list = [record['rid'] for record in redcap_data]
+    redcap_data = [r for r in redcap_data if r['admin_archived'] != '1']
+    id_list = [r['rid'] for r in redcap_data]
 
     match_csv = gtk_context.get_input_path('match_csv')
     if match_csv:
         manual_match(match_csv, redcap_data, redcap_project, id_list)
     else:
+        today = datetime.today()
+        archive_delta = timedelta(days=ARCHIVE_DAYS)
+        archive_threshold = today - archive_delta
+
         for site in SITE_LIST:
             pi_copy(site)
             redcap_match_mv(site, redcap_data, redcap_project, id_list)
+            archive_flywheel(site, archive_threshold)
+
+        archive_redcap(redcap_data, redcap_project, archive_threshold)
+
     deid()
 
     log.info('Gear complete. Exiting.')
