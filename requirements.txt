@@ -3,4 +3,5 @@ flywheel_gear_toolkit
 pycap
 pandas
 drypy
+tenacity
 git+https://github.com/poldracklab/wbhi-utils.git
