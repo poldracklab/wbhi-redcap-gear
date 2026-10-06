@@ -7,6 +7,7 @@ import os
 import sys
 import pip
 import pandas as pd
+import requests
 import logging
 from drypy import dryrun, set_logging_level
 from drypy.patterns import sham
@@ -23,6 +24,7 @@ from flywheel import (
     Group,
     Gear,
 )
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 pip.main(['install', '--upgrade', 'git+https://github.com/poldracklab/wbhi-utils.git'])
 from wbhiutils import parse_dicom_hdr  # noqa: E402
@@ -726,9 +728,28 @@ def pi_copy(site: str) -> None:
         log.info('No sessions were smart-copied.')
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(
+        (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ),
+)
+def export_records_wrapper(redcap_project: Project) -> list[dict]:
+    """Wrapper for redcap.export_records() that retries using tenacity."""
+    return redcap_project.export_records(export_survey_fields=True)
+
+
 @sham(return_value={'dry_run': True, 'count': 0})
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(
+        (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ),
+)
 def import_records_wrapper(redcap_project: Project, new_records: list) -> dict:
-    """Dry-run wrapper for <redcap_project>.import_records()"""
+    """Dry-run wrapper for <redcap_project>.import_records() that retries using tenacity."""
     response = redcap_project.import_records(new_records)
     response['dry_run'] = False
     return response
@@ -1011,7 +1032,7 @@ def main():
         set_logging_level(10)
     redcap_api_key = config['redcap_api_key']
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
-    redcap_data = redcap_project.export_records(export_survey_fields=True)
+    redcap_data = export_records_wrapper(redcap_project)
     redcap_data = [r for r in redcap_data if r['admin_archived'] != '1']
     id_list = [r['rid'] for r in redcap_data]
 
