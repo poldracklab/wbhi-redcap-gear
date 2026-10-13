@@ -1030,7 +1030,11 @@ def main():
     if config['dry_run']:
         dryrun(True)
         set_logging_level(10)
-    redcap_api_key = config['redcap_api_key']
+    try:
+        redcap_api_key = os.environ['REDCAP_API_KEY']
+    except KeyError:
+        log.error('REDCAP_API_KEY is not set in the environment.')
+        sys.exit(1)
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     redcap_data = export_records_wrapper(redcap_project)
     redcap_data = [r for r in redcap_data if r['admin_archived'] != '1']
