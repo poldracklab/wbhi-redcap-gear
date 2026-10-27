@@ -477,8 +477,8 @@ def tag_session_redcap(session: SessionListOutput) -> None:
     else:
         n = 0
 
-    # Number of days until next check increases by factor of 2 each time, maxing at 32 days
-    new_tag_date = datetime.today() + timedelta(days=2 ** min(5, n))
+    # Number of days increases by 2, maxing out at 7 days
+    new_tag_date = datetime.today() + timedelta(days=min(7, 1 + 2 * n))
     new_tag_date_str = new_tag_date.strftime(DATE_FORMAT_FW)
     new_redcap_tag = 'redcap_' + str(n + 1) + '_' + new_tag_date_str
     session.add_tag(new_redcap_tag)
