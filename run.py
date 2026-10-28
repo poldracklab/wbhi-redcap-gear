@@ -190,10 +190,6 @@ def split_session(session: SessionListOutput, hdr_list: list) -> None:
     """
     hdr_df = pd.DataFrame(hdr_list)
 
-    # Don't split if file classifier gear hasn't been run on all acquisitions
-    if 'FILE_CLASSIFIER_NOT_RUN' in hdr_df['error'].values:
-        return
-
     need_to_split = hdr_df['pi_id'].nunique() > 1
 
     # Make sure the gaps between start times of consecutive acquisitions < 4 hrs
@@ -661,6 +657,7 @@ def get_pi_id(session: SessionListOutput, site: str) -> str:
     """Returns the pi_id of a session. If unable to determine, returns 'other'"""
 
     hdr_list = []
+    classifier_not_run = False
     manual_pi_id = [
         t.split('manual_copy_')[1] for t in session.tags if t.startswith('manual_copy_')
     ]
@@ -669,6 +666,8 @@ def get_pi_id(session: SessionListOutput, site: str) -> str:
         try:
             hdr_fields = get_hdr_fields(acq, site)
             if hdr_fields['error']:
+                if hdr_fields['error'] == 'FILE_CLASSIFIER_NOT_RUN':
+                    classifier_not_run = True
                 continue
         except ValueError as e:
             log.debug(f'Problem with DICOM header: {e}')
@@ -689,6 +688,14 @@ def get_pi_id(session: SessionListOutput, site: str) -> str:
     if not hdr_list:
         log.warning(
             'Could not parse any acquisition headers for session %s',
+            session.id,
+        )
+    elif classifier_not_run:
+        # Don't split if file-classifier hasn't been run on all acquisitions,
+        # since hdr_list is missing the ones it hasn't been run on
+        log.info(
+            'Skipping split check for session %s because file-classifier has not '
+            'been run on all of its acquisitions.',
             session.id,
         )
     elif 'skip_split' not in session.tags:
