@@ -804,7 +804,9 @@ def redcap_match_mv(
     redcap if WBHI-ID already exists.) Finally, move matching subjects to wbhi/pre-deid project."""
     log.info('Checking %s for matches with redcap.', site)
     new_records = []
-    wbhi_id_session_dict = {}
+    # List of tuples rather than a dict, since multiple sessions can share a
+    # wbhi-id (e.g. repeat visits by the same participant)
+    wbhi_id_session_list = []
 
     pre_deid_project = client.lookup('wbhi/pre-deid')
     site_project = client.lookup(f'{site}/Inbound Data')
@@ -834,7 +836,7 @@ def redcap_match_mv(
         matches = find_matches(hdr_fields, redcap_data)
         if matches:
             wbhi_id = generate_wbhi_id(matches, site, id_list)
-            wbhi_id_session_dict[wbhi_id] = session
+            wbhi_id_session_list.append((wbhi_id, session))
             for match in matches:
                 match['rid'] = wbhi_id
                 match['scanner_platform'] = hdr_fields['software_version']
@@ -847,7 +849,7 @@ def redcap_match_mv(
         # Import updated records into REDCap
         response = import_records_wrapper(redcap_project, new_records)
         if response['count'] == len(new_records) or response['dry_run']:
-            for wbhi_id, session in wbhi_id_session_dict.items():
+            for wbhi_id, session in wbhi_id_session_list:
                 tag_session_wbhi(session)
                 subject = client.get_subject(session.parents.subject)
                 subject_update_wrapper(subject, wbhi_id)
