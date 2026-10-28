@@ -1056,13 +1056,18 @@ def main():
         today = datetime.today()
         archive_delta = timedelta(days=ARCHIVE_DAYS)
         archive_threshold = today - archive_delta
+        archive = config['archive']
+        if not archive:
+            log.info('Skipping archiving because the "archive" config is false.')
 
         for site in SITE_LIST:
             pi_copy(site)
             redcap_match_mv(site, redcap_data, redcap_project, id_list)
-            archive_flywheel(site, archive_threshold)
+            if archive:
+                archive_flywheel(site, archive_threshold)
 
-        archive_redcap(redcap_data, redcap_project, archive_threshold)
+        if archive:
+            archive_redcap(redcap_data, redcap_project, archive_threshold)
 
     deid()
 

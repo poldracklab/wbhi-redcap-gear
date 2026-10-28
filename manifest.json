@@ -51,6 +51,11 @@
 			"description": "Run dry-run. Dry-runs do not make any changes to REDCap or Flywheel.",
 			"type": "boolean",
 			"default": false
+		},
+		"archive": {
+			"description": "Archive unmatched REDCap records and Flywheel sessions older than the archive threshold. Default = true.",
+			"type": "boolean",
+			"default": true
 		}
 	},
 	"command": "python run.py"
