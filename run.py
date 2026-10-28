@@ -996,7 +996,7 @@ def archive_redcap(
             new_record = record.copy()
             new_record['admin_archived'] = 1
             new_records.append(new_record)
-            log.info("Redcap record %s remains unmatched after 90 days. Archiving." % record['rid'])
+            log.info("Redcap record %s remains unmatched after 90 days. Archiving." % record['participant_id'])
 
     if new_records:
         import_records_wrapper(redcap_project, new_records)
