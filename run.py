@@ -35,6 +35,8 @@ from wbhiutils.constants import (  # noqa: E402
     DATETIME_FORMAT_RC,
     DATE_FORMAT_RC,
     SITE_KEY,
+    REDCAP_SITE,
+    REDCAP_SITE_REVERSE,
     REDCAP_API_URL,
     REDCAP_KEY,
     WBHI_ID_SUFFIX_LENGTH,
@@ -380,7 +382,8 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
     if missing_hdr := hdr_keys - set(hdr_fields.keys()):
         log.warning('Headers missing required key(s): %s', missing_hdr)
     # if not all(x for x in hdr_fields.keys())
-    mri_pi_field = f'mri_pi_{hdr_fields["site"]}'
+    rc_site = REDCAP_SITE[hdr_fields['site']]
+    mri_pi_field = f'mri_pi_{rc_site}'
     redcap_keys = {
         'icf_consent',
         'consent_complete',
@@ -406,8 +409,8 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
         if (
             record['icf_consent'] == '1'
             and record['consent_complete'] == '2'
-            and record['site'] == hdr_fields['site']
-            and record['site'] in SITE_LIST
+            and record['site'] == rc_site
+            and record['site'] in REDCAP_SITE_REVERSE
             and date_rc == hdr_fields['date']
             and REDCAP_KEY['am_pm'][record['mri_ampm']] == hdr_fields['am_pm']
             and record['mri'].casefold() == hdr_fields['sub_id']
