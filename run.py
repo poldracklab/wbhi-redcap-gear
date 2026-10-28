@@ -1038,6 +1038,23 @@ def archive_flywheel(site: str, archive_threshold: str) -> None:
 
 
 
+def parse_sites(sites: str) -> list:
+    """Returns the sites to run on, parsed from the comma-separated 'sites'
+    config. Empty means every site in SITE_LIST."""
+    site_list = [s.strip().casefold() for s in sites.split(',') if s.strip()]
+    if not site_list:
+        return SITE_LIST
+    if invalid := [s for s in site_list if s not in SITE_LIST]:
+        log.error(
+            'Unrecognized site(s) in the "sites" config: %s. Valid sites: %s',
+            invalid,
+            SITE_LIST,
+        )
+        sys.exit(1)
+    log.info('Running on %d of %d sites: %s', len(site_list), len(SITE_LIST), site_list)
+    return site_list
+
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
@@ -1066,7 +1083,9 @@ def main():
         if not archive:
             log.info('Skipping archiving because the "archive" config is false.')
 
-        for site in SITE_LIST:
+        site_list = parse_sites(config['sites'])
+
+        for site in site_list:
             pi_copy(site)
             redcap_match_mv(site, redcap_data, redcap_project, id_list)
             if archive:

@@ -61,6 +61,11 @@
 			"description": "Check every eligible session against REDCap, ignoring the 'redcap_<n>_<date>' tags that schedule the next check. Useful for forcing a re-check of all sessions. Default = false.",
 			"type": "boolean",
 			"default": false
+		},
+		"sites": {
+			"description": "Comma-separated list of sites to run on, e.g. 'ucdavis,ucsf'. Leave empty to run on all sites. Default = all.",
+			"type": "string",
+			"default": ""
 		}
 	},
 	"command": "python run.py"
