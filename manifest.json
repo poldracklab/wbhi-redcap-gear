@@ -56,6 +56,11 @@
 			"description": "Archive unmatched REDCap records and Flywheel sessions older than the archive threshold. Default = true.",
 			"type": "boolean",
 			"default": true
+		},
+		"ignore_redcap_tags": {
+			"description": "Check every eligible session against REDCap, ignoring the 'redcap_<n>_<date>' tags that schedule the next check. Useful for forcing a re-check of all sessions. Default = false.",
+			"type": "boolean",
+			"default": false
 		}
 	},
 	"command": "python run.py"

@@ -92,6 +92,9 @@ def get_sessions_redcap(fw_project: ProjectOutput) -> list:
             days=config['ignore_until_n_days_old']
         ):
             continue
+        if config['ignore_redcap_tags']:
+            sessions.append(session)
+            continue
         redcap_tags = [t for t in session.tags if t.startswith('redcap')]
         if not redcap_tags:
             sessions.append(session)
