@@ -57,6 +57,16 @@ def timedelta_from_now(in_timestamp: datetime, tz_from_utc: int = -8) -> timedel
     return now - UTC_timestamp
 
 
+def parse_redcap_datetime(value: str, fmt: str = DATETIME_FORMAT_RC) -> datetime | None:
+    """Parses a REDCap date/datetime field. Returns None if the value is blank or
+    a sentinel like '[not completed]', which REDCap writes into the timestamp
+    field of a survey that was started but never submitted."""
+    try:
+        return datetime.strptime(value, fmt)
+    except (TypeError, ValueError):
+        return None
+
+
 def get_sessions_pi_copy(fw_project: ProjectOutput) -> list:
     """Get and filter sessions for pi_copy()"""
     sessions = []
@@ -404,9 +414,8 @@ def find_matches(hdr_fields: dict, redcap_data: list) -> list | None:
             log.debug('REDCap record missing required key(s): %s', missing_redcap)
             continue
 
-        try:
-            date_rc = datetime.strptime(record['mri_date'], DATE_FORMAT_RC)
-        except ValueError:
+        date_rc = parse_redcap_datetime(record['mri_date'], DATE_FORMAT_RC)
+        if date_rc is None:
             continue
 
         if (
@@ -786,10 +795,15 @@ def long_redcap_interval_tag(
     """Checks whether the interval between the session and redcap record is > 2 weeks.
     If so, tags the session with 'long-redcap-interval_unsent'."""
     max_delta = timedelta(days=14)
-    interval_delta = abs(
-        datetime.strptime(record['consent_timestamp'], DATETIME_FORMAT_RC)
-        - hdr_fields['date']
-    )
+    consent_datetime = parse_redcap_datetime(record['consent_timestamp'])
+    if consent_datetime is None:
+        log.debug(
+            'Record %s has an unparseable consent_timestamp (%r), skipping interval check.',
+            record['participant_id'],
+            record['consent_timestamp'],
+        )
+        return
+    interval_delta = abs(consent_datetime - hdr_fields['date'])
     if interval_delta > max_delta:
         tag = 'long-redcap-interval_unsent'
         if tag not in session.tags:
@@ -999,7 +1013,14 @@ def archive_redcap(
 
     new_records = []
     for record in redcap_data:
-        record_date = datetime.strptime(record['consent_timestamp'][:10], '%Y-%m-%d')
+        record_date = parse_redcap_datetime(record['consent_timestamp'])
+        if record_date is None:
+            log.debug(
+                'Record %s has an unparseable consent_timestamp (%r), not archiving.',
+                record['participant_id'],
+                record['consent_timestamp'],
+            )
+            continue
         if record['rid'] in ('', ' ') and record_date < archive_threshold:
             new_record = record.copy()
             new_record['admin_archived'] = 1
